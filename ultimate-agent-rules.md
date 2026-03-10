@@ -1,5 +1,6 @@
 ---
-applyTo: "**"
+trigger: "always_on"
+description: "Ultimate AI Coding Agent Rules for absolute precision, zero laziness, and infallible execution."
 ---
 
 # 🔥 ULTIMATE AI CODING AGENT RULES 🔥

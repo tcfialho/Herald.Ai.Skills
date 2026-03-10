@@ -1,5 +1,5 @@
 ---
-inclusion: always
+inclusion: "always"
 ---
 # 🔥 ULTIMATE AI CODING AGENT RULES 🔥
 *Version 8.0 - The Definitive Synthesis.*

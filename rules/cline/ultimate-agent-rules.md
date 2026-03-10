@@ -1,6 +1,4 @@
----
-applyTo: "**"
----
+<!-- Ultimate AI Coding Agent Rules for absolute precision, zero laziness, and infallible execution. -->
 
 # 🔥 ULTIMATE AI CODING AGENT RULES 🔥
 *Version 8.0 - The Definitive Synthesis.*

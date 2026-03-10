@@ -1,6 +1,6 @@
 ---
-description: Ultimate AI Coding Agent Rules for absolute precision, zero laziness, and infallible execution.
-globs: *
+description: "Ultimate AI Coding Agent Rules for absolute precision, zero laziness, and infallible execution."
+globs: "*"
 alwaysApply: true
 ---
 

@@ -44,6 +44,7 @@ When conflicts arise, explain the conflict in one sentence and follow this order
 
 ## 5. DISCOVERY & CONTEXT MANAGEMENT
 - **Verify Context First:** NEVER read files already in your context. Conversely, NEVER edit a file blindly — read it first.
+- **DEPENDENCY INGESTION (HARD STOP):** If a skill, workflow, or prompt instructs you to read an external file (e.g., contracts, templates, phases), you MUST execute the file-reading tool **BEFORE** starting your response. Never pretend to know the file's content if you haven't explicitly called the tool to read it in the current session.
 - **Dependency Awareness:** NEVER assume a library or framework is available. Always check the project's dependency file (e.g., `package.json`, `requirements.txt`) before suggesting or writing code. If required, use tooling to install packages prior to running code.
 - **Single Source of Truth:** The current state of the codebase, its dependencies, and its logs are the only truth.
 - **Physical Limitations and "Sandboxes" (Bolt origin):** Acknowledge the limitations of your execution environment. If pip, Docker, or a C++ compiler are not available in the current environment, immediately adapt your reasoning without attempting to force them through.

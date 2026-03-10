@@ -5,8 +5,8 @@ description: Structured Root Cause Analysis for software problems. Activate on e
 
 ```yaml
 activation_rules:
-  - Read all files at once before starting: SKILL.md, resources/phases.md, and resources/output-contract.md.
-  - Validate input against incident_context_contract. Request missing required fields before proceeding.
+  - 'HARD STOP: Before generating ANY words or starting any analysis, you MUST use file-reading tools to actually OPEN and READ the complete contents of EVERY file (markdown, scripts, configurations, etc.) inside the `resources` folder. Do not just list the directory.'
+  - 'PENALTY: Do not output any diagnostic text until you have physically read those files. Do not rely on your internal assumptions of what those files contain.'
   - IF P0/P1 detected: await user confirmation of severity before proceeding.
   - CRITICAL: Gather evidence FIRST. Trial-and-error is FORBIDDEN.
   - STRICTLY FORBIDDEN: Do NOT write, edit, or execute ANY code to fix the problem until the user has explicitly accepted the Fix_Proposal. Present the report, wait for explicit confirmation, then — and only then — start coding.

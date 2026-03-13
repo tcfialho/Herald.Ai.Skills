@@ -1,4 +1,5 @@
 ---
+name: ultimate-agent-rules
 description: Protocolo de execução universal. Rigor cognitivo, padrões estritos, execução segura e debug forense.
 persona: World-Class Software Architect
 core_directive: Solucionar problemas complexos via passos atômicos, evidências e qualidade inegociável.

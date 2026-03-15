@@ -1,5 +1,5 @@
 ---
-name: browser-use
+name: browser-automation-cdp
 description: >
   Use this skill whenever the task involves browser automation, web scraping, or
   interacting with pages that require an authenticated session — especially via
@@ -118,14 +118,26 @@ $ws.Dispose()
 **Problema:** React.lazy + Suspense criam múltiplos estágios de loading; DOM ready ≠ app pronto.
 
 ```javascript
-// Aguardar hydration via flag global (adicionar no app):
+// Opção A: custom event via flag global (requer instrumentação no app)
 await new Promise(resolve => {
   if (window.__APP_HYDRATED__) return resolve();
   window.addEventListener('__REACT_HYDRATION_COMPLETE__', resolve, { once: true });
 });
 
-// Alternativa: aguardar loader desaparecer
+// Opção B: aguardar loader desaparecer (Playwright/Puppeteer)
 await page.waitForSelector('[data-testid="page-loader"]', { state: 'hidden' });
+```
+
+```powershell
+# Opção C: polling via CDP — sem Playwright, sem instrumentação no app
+function WaitHydrated {
+    for ($i = 0; $i -lt 50; $i++) {
+        $r = Eval "!!window.__APP_HYDRATED__"
+        if ($r -eq 'true') { return }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "App não hidratou em 10s"
+}
 ```
 
 ---
@@ -140,6 +152,12 @@ const inner = document.querySelector('my-component').shadowRoot.querySelector('.
 
 // Closed shadow root — usar composedPath no evento
 element.addEventListener('click', e => console.log(e.composedPath()[0]));
+
+// Closed shadow root — monkey-patch para forçar mode: 'open' (executar ANTES da init do componente)
+const _orig = Element.prototype.attachShadow;
+Element.prototype.attachShadow = function(init) {
+  return _orig.call(this, { ...init, mode: 'open' });
+};
 
 // Nested shadow DOM — travessia recursiva
 function queryDeepShadow(selectors) {
@@ -238,6 +256,26 @@ const result = await new Promise(resolve => {
 // ALTERNATIVA: Start-Sleep externo (PowerShell), sem awaitPromise
 ```
 
+**Aguardar elemento aparecer (toast, spinner, campo dinâmico):**
+
+```javascript
+// Via CDP com awaitPromise=true — MutationObserver encapsulado em Promise real
+const expr = `
+  new Promise((resolve, reject) => {
+    if (document.querySelector('${selector}')) return resolve(true);
+    const obs = new MutationObserver(() => {
+      if (document.querySelector('${selector}')) { obs.disconnect(); resolve(true); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => { obs.disconnect(); resolve(false); }, 5000);
+  })
+`;
+WsSend @{ id=1; method='Runtime.evaluate'; params=@{
+    expression=$expr; returnByValue=$true; awaitPromise=$true
+}}
+$found = (WsRecv | ConvertFrom-Json).result.result.value
+```
+
 ---
 
 ### File Upload
@@ -265,6 +303,41 @@ document.getElementById('fileInput').dispatchEvent(new Event('change', { bubbles
 const keys = Object.keys(localStorage).filter(k => /token|auth|bearer/i.test(k));
 const token = localStorage.getItem(keys[0]);
 // Usar o token imediatamente via PowerShell e descartar da memória
+```
+
+**Refresh Token — interceptor completo:**
+
+```javascript
+const _fetch = window.fetch.bind(window);
+
+window.fetch = async function(...args) {
+  let response = await _fetch(...args);
+  if (response.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (!refreshed) throw new Error('Refresh token inválido — re-autenticação necessária');
+    const [input, init = {}] = args;
+    response = await _fetch(input, {
+      ...init,
+      headers: { ...(init.headers || {}), 'Authorization': `Bearer ${window.__ACCESS_TOKEN__}` }
+    });
+  }
+  return response;
+};
+
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem('refresh_token');
+  if (!refreshToken) return false;
+  const res = await _fetch('/auth/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken })
+  });
+  if (!res.ok) return false;
+  const { access_token } = await res.json();
+  localStorage.setItem('access_token', access_token);
+  window.__ACCESS_TOKEN__ = access_token;
+  return true;
+}
 ```
 
 **Hierarquia de auth para APIs protegidas:**
@@ -334,9 +407,3 @@ if 'access_token' in result:
 | Reutilizar WS sem drain após navegação | IDs de resposta desalinhados | PING `id=99` + drain loop |
 
 ---
-
-## Status dos Cenários Validados
-
-20/20 cenários validados via CDP. Lições completas em `references/lab-extractions.md`.
-
-> Para cenários específicos com código expandido, leia o arquivo de referência correspondente.

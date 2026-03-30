@@ -7,7 +7,7 @@ only appended or superseded via the tasks dict.
 
 Usage:
     sm = NexusStateManager(project_root=".")
-    state = sm.create_plan_state("nexus-auth", "auth-system")
+    state = sm.create_plan_state("nexus_auth", "auth-system")
     sm.update_task_status("task-001", "in_progress", files=["src/models.py"])
     sm.update_task_status("task-001", "completed", files=["src/models.py", "tests/test_models.py"])
 """

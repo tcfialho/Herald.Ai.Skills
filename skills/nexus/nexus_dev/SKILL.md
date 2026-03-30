@@ -30,7 +30,7 @@ Antes de iniciar qualquer código:
 ```python
 from nexus_core.state_manager import NexusStateManager
 sm = NexusStateManager(project_root=".")
-sm.create_plan_state(plan_id="nexus-{plan_name}", plan_name="{plan_name}")
+sm.create_plan_state(plan_id="nexus_{plan_name}", plan_name="{plan_name}")
 ```
 
 ---

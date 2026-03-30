@@ -196,7 +196,7 @@ class BuildSystem:
             "go": ["go", "build", "./..."],
             "dotnet": ["dotnet", "build", "--no-restore"],
             "cargo": ["cargo", "build"],
-            "docker": ["docker", "build", "-t", "nexus-build-check", "."],
+            "docker": ["docker", "build", "-t", "nexus_build_check", "."],
         }
         base = commands.get(build_system)
         if base is None:

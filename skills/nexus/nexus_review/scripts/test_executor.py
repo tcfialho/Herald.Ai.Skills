@@ -29,7 +29,7 @@ from typing import Optional
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))  # for nexus_core
 sys.path.insert(
-    0, str(_ROOT / "nexus-dev" / "scripts")
+    0, str(_ROOT / "nexus_dev" / "scripts")
 )  # for test_runner, build_system
 
 from test_runner import TestRunner, TestResult

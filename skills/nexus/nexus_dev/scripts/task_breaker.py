@@ -62,14 +62,22 @@ _CRITERIA_BLOCK_RE = re.compile(r"\*\*Acceptance criteria:\*\*\s*\n((?:\s*-\s+.+
 class AtomicTask:
     id: str
     title: str
-    description: str
+    objetivo: str = ""                                            # Direct instruction: what to code
+    tipo: str = "Dados"                                           # Dados | UI | API | Integração
+    nivel: int = 0                                                # Dependency level: 0 | 1 | 2
+    historia_ref: str = ""                                        # Parent story ID (child → parent)
+    pre_condicao: list[str] = field(default_factory=list)         # Structural deps (real code from prior tasks)
+    pos_condicao: list[str] = field(default_factory=list)         # Exit contract (technical, verifiable, binary)
+    diretiva_de_teste: str = ""                                   # Integração | Unitário | Componente | E2E
     files: list[str] = field(default_factory=list)
-    priority: str = "medium"
     dependencies: list[str] = field(default_factory=list)
-    ears_refs: list[str] = field(default_factory=list)       # EARS requirement IDs covered by this task
-    acceptance_criteria: list[str] = field(default_factory=list)  # verifiable done conditions
-    done_criteria: str = ""   # legacy single-string fallback
+    ears_refs: list[str] = field(default_factory=list)
     status: str = "pending"
+    # Legacy fields — backward compatibility
+    description: str = ""
+    priority: str = "medium"
+    acceptance_criteria: list[str] = field(default_factory=list)
+    done_criteria: str = ""
 
     def validate(self) -> ValidationResult:
         return validate_task_definition(asdict(self))

@@ -51,12 +51,75 @@ Registre a branch no state:
 { "feature_branch": "feature/{plan_name}" }
 ```
 
-### Passo 2 — Task Queue Generation (Atomic Task Breakdown)
+### Passo 2 — Story Generation (UCs → Histórias)
 
-Execute `scripts/task_breaker.py`:
+Antes de quebrar em tasks, gere **Histórias de Usuário** a partir dos fluxos do spec.md.
+Cada fluxo de cada UC (principal + alternativos) produz **exatamente uma história**.
+
+Execute `scripts/story_generator.py`:
+```python
+from story_generator import StoryGenerator
+sg = StoryGenerator(plan_path=".nexus/{plan_name}/spec.md")
+stories = sg.generate_stories()
+sg.save(f".nexus/{plan_name}/stories.json")
+```
+
+**Regras de geração de Histórias:**
+1. **1 Fluxo = 1 História.** Se o UC-01 tem fluxo principal + 2 alternativos → 3 histórias.
+2. **Referência filho → pai:** Cada história referencia o UC de origem (`uc_ref: "UC-01"`). O UC **nunca** referencia a história.
+3. **ID derivado do UC:** `US-UC01-FP` (fluxo principal), `US-UC01-FA1` (alternativo 1), etc.
+4. **Descrição breve:** Apenas para fins visuais (1 linha). A fonte da verdade é o UC no spec.md.
+5. **Critérios de Aceitação em Gherkin:** Cada história DEVE ter ao menos 1 critério.
+
+**Formato obrigatório de uma História:**
+```yaml
+id: "US-UC01-FP"
+uc_ref: "UC-01"                    # Pai (fonte da verdade no spec.md)
+fluxo_id: "UC-01.FP"              # ID do fluxo no drill-down do UC
+descricao_breve: "Criar tarefa com título e prioridade"
+criterios_aceitacao:
+  - dado: "o usuário está na tela de lista de tarefas"
+    quando: "preenche o título e clica em Criar"
+    entao: "a tarefa aparece na lista com status pendente"
+  - dado: "o campo título está vazio"
+    quando: "clica em Criar"
+    entao: "exibe mensagem de validação e não cria a tarefa"
+```
+
+Registre as histórias no state:
+```python
+sm.register_stories([{"id": s.id, "uc_ref": s.uc_ref, "fluxo_id": s.fluxo_id} for s in stories])
+```
+
+**OBRIGAÇÃO DE EXIBIÇÃO:** Após gerar as histórias, exiba o inventário completo:
+
+````text
+📖 HISTÓRIAS GERADAS: {plan_name}
+   Total: {N} histórias | {M} UCs cobertos
+
+   📄 [US-UC01-FP] Criar tarefa (Fluxo Principal)
+       UC Ref: UC-01 | Fluxo: UC-01.FP
+       Gherkin: 2 critérios de aceitação
+
+   📄 [US-UC01-FA1] Criar tarefa sem título (Fluxo Alternativo 1)
+       UC Ref: UC-01 | Fluxo: UC-01.FA1
+       Gherkin: 1 critério de aceitação
+
+   📄 [US-UC02-FP] Marcar tarefa como concluída (Fluxo Principal)
+       UC Ref: UC-02 | Fluxo: UC-02.FP
+       Gherkin: 2 critérios de aceitação
+   ...
+````
+
+### Passo 3 — Task Queue Generation (Histórias → Tasks Atômicas)
+
+Execute `scripts/task_breaker.py` a partir das histórias geradas:
 ```python
 from task_breaker import TaskBreaker
-breaker = TaskBreaker(plan_path=".nexus/{plan_name}/spec.md")
+breaker = TaskBreaker(
+    plan_path=".nexus/{plan_name}/spec.md",
+    stories_path=".nexus/{plan_name}/stories.json",
+)
 tasks = breaker.break_tasks()
 breaker.save(f".nexus/{plan_name}/tasks.json")
 ```
@@ -69,7 +132,6 @@ from pathlib import Path
 proto_path = Path(f".nexus/{plan_name}/proto.json")
 if proto_path.exists():
     proto_data = json.loads(proto_path.read_text(encoding="utf-8"))
-    # Índice: UC → screen decidida
     screens_by_uc = {
         uc: screen
         for screen in proto_data.get("screens", [])
@@ -87,43 +149,111 @@ if proto_path.exists():
 # SE proto.json não existe: task.visual_spec nunca é definido — sem impacto no fluxo.
 ```
 
-**O que uma task contém (obrigatório):**
-```
-- ID e título descritivo
-- Tópicos e subtópicos do que deve ser implementado
-- Requisito(s) EARS do plano que esta task cobre
-- Lista de arquivos a criar/modificar (max 3 por commit)
-- Dependências de tasks anteriores
-- Critérios de conclusão verificaveis
+**Estrutura obrigatória de uma Task:**
+```yaml
+id: "TASK-001"
+title: "Criar schema da tabela Tarefa"
+historia_ref: "US-UC01-FP"        # Pai — referência à história (child → parent)
+tipo: "Dados"                     # Dados | UI | API | Integração
+nivel: 0                          # 0=sem bloqueios | 1=dep simples | 2=dep composta
+
+objetivo: "Criar migration com tabela `tarefas` contendo colunas id, titulo, prioridade, status, created_at"
+
+pre_condicao:
+  - "Nenhuma — Nível 0"           # OU artefatos reais de tasks anteriores
+
+pos_condicao:
+  - "Tabela `tarefas` existe no banco com todas as colunas"
+  - "Migration é reversível (up/down)"
+
+diretiva_de_teste: "Integração"   # Teste bate no banco real + teardown
+
+files: ["src/migrations/001_create_tarefas.sql", "tests/integration/test_tarefas_schema.py"]
+dependencies: []                  # IDs de tasks que devem estar completas antes
+ears_refs: ["FR-01"]              # EARS requirements cobertos
 ```
 
-**Regra Atômica:** Cada micro-commit toca no **máximo 3 arquivos**. Isso não limita a complexidade da task — limita o escopo de cada commit individual para garantir reversibilidade. Uma task complexa pode gerar vários commits atômicos sequenciais.
+**Regras de Fatiamento por Camada Técnica (Granularidade):**
+
+A Task **nunca resolve um fluxo inteiro** — resolve uma engrenagem. A quebra técnica padrão separa o escopo em caixas-pretas isoladas:
+
+| Tipo | Escopo | Exemplo |
+|------|--------|---------|
+| **Dados** | Apenas queries, schemas, persistência | Criar tabela, escrever query de inserção |
+| **UI** | Apenas componente visual "burro", zero lógica de rede | Montar formulário HTML, renderizar lista |
+| **API** | Apenas recebimento do payload, validação e repasse para dados | Rota POST, validar campos, chamar repo |
+| **Integração** | O "fio" que liga UI (clique) à API (fetch/axios) | onClick → fetch → atualizar DOM |
+
+**Regras de Ordenação por Grafo de Dependências (Níveis):**
+
+| Nível | Regra | Exemplo |
+|-------|-------|---------|
+| **0** (Sem Bloqueios) | Não depende de código anterior. Pode executar imediatamente. | Criar tabela, montar HTML base |
+| **1** (Dep Simples) | Exige artefato do Nível 0 pronto. | Endpoint API que precisa do schema |
+| **2** (Dep Composta) | Exige artefatos de níveis anteriores. | Integração final (UI + API prontos) |
+
+**Regra do "Zero Mocks" (Pré-condições Físicas):**
+
+A Pré-condição de uma Task **nunca é teórica ou simulada**. Se a Task da API depende do Banco de Dados, o código **real e funcional** gerado pela Task do Banco de Dados torna-se o contexto obrigatório de entrada. A IA é **terminantemente proibida** de criar stubs ou mocks para simular integrações internas.
+
+**Contrato de Pós-condição Fechado:**
+
+A Pós-condição é técnica, verificável e binária. Sem linguagem de negócio ("o usuário fica feliz"). Deve ditar **exatamente** a alteração de estado do sistema:
+- `"Retorna HTTP 201 com body { id, titulo, status }"`
+- `"Emite evento 'tarefa-criada' com payload { id }"`
+- `"Salva registro na tabela tarefas com status = 'pendente'"`
+
+**Blindagem de Testes (Diretiva por Tipo de Task):**
+
+| Tipo de Task | Diretiva | Regra |
+|-------------|----------|-------|
+| **Dados** | `Integração` | Teste bate no banco real, faz limpeza (teardown) |
+| **API** | `Integração` | Teste levanta servidor, envia request real, valida response |
+| **UI** | `Componente` | Teste renderiza componente, valida DOM/eventos |
+| **Integração** | `E2E` | Teste exercita fluxo completo (UI → API → Dados) |
+
+**Regra Atômica:** Cada micro-commit toca no **máximo 3 arquivos**. Isso não limita a complexidade da task — limita o escopo de cada commit individual para garantir reversibilidade.
 
 Registre todas as tasks no state:
 ```python
-sm.register_tasks([{"id": t.id, "title": t.title, "files": t.files} for t in tasks])
+sm.register_tasks([{
+    "id": t.id,
+    "title": t.title,
+    "historia_ref": t.historia_ref,
+    "tipo": t.tipo,
+    "nivel": t.nivel,
+    "files": t.files,
+} for t in tasks])
 ```
 
-**OBRIGAÇÃO DE INÍCIO (HARD STOP):** No primeiro output da rotina `/dev`, você é OBRIGADO a imprimir o plano de execução completo no chat, contendo **absolutamente todas as tasks** e seu escopo (Tópicos, Arquivos, EARS), ANTES de iniciar a primeira task.  
-⚠️ **FORMATAÇÃO EXATA OBRIGATÓRIA:** Em sua resposta inicial de execução de log, envolva a string rigorosamente em bloco (` ```text `) como abaixo:
+**OBRIGAÇÃO DE INÍCIO (HARD STOP):** No primeiro output da rotina `/dev`, você é OBRIGADO a imprimir o plano de execução completo no chat, contendo **absolutamente todas as tasks** e seu escopo, ANTES de iniciar a primeira task.
+⚠️ **FORMATAÇÃO EXATA OBRIGATÓRIA:**
 
 ````text
 📋 PLANO DE EXECUÇÃO: {plan_name}
-   Total: {N} tasks
+   Total: {N} tasks | {M} histórias
 
-   ⏳ [TASK-01] Inicializar estrutura base do projeto
-       Tópicos: criar diretórios, configurar pyproject.toml, .gitignore
-       Arquivos: src/__init__.py, pyproject.toml
-       EARS: FR-01
+   ⏳ [TASK-001] Criar schema da tabela Tarefa
+       História: US-UC01-FP | Tipo: Dados | Nível: 0
+       Objetivo: Criar migration com tabela tarefas
+       Arquivos: src/migrations/001_create_tarefas.sql
+       Pós-condição: Tabela existe no banco com todas as colunas
 
-   ⏳ [TASK-02] Implementar modelo de dados User
-       Tópicos: User dataclass, validação de campos, Value Objects
-       Arquivos: src/models/user.py, tests/test_user_model.py
-       EARS: FR-02, FR-03
+   ⏳ [TASK-002] Implementar componente de formulário
+       História: US-UC01-FP | Tipo: UI | Nível: 0
+       Objetivo: Montar formulário HTML com campos título e prioridade
+       Arquivos: src/components/TaskForm.jsx
+       Pós-condição: Formulário renderiza com validação client-side
+
+   ⏳ [TASK-003] Criar endpoint POST /api/tarefas
+       História: US-UC01-FP | Tipo: API | Nível: 1
+       Objetivo: Rota que recebe payload, valida e persiste
+       Arquivos: src/routes/tarefas.py, tests/integration/test_create_tarefa.py
+       Pós-condição: Retorna HTTP 201 com { id, titulo, status }
    ...
 ````
 
-### Passo 3 — Priority Queue Ordering
+### Passo 4 — Priority Queue Ordering
 
 **REGRA:** `PriorityQueue` é a **única fonte de verdade** para ordenação de tasks em execução.
 `TaskBreaker.get_ordered_queue()` é **PROIBIDO** para execução — usa ordenação por prioridade sem respeitar dependências, podendo executar uma task antes de suas dependências estarem completas. Use exclusivamente:
@@ -134,7 +264,7 @@ pq = PriorityQueue(project_root=".")
 ordered = pq.build_from_task_file(f".nexus/{plan_name}/tasks.json")
 ```
 
-### Passo 4 — Anti-Interruption Execution Loop
+### Passo 5 — Anti-Interruption Execution Loop
 
 **ESTE LOOP NÃO TEM BREAK PREMATURE. Execute até o final mantendo a OBRIGAÇÃO VISUAL nas respostas do chat.**
 
@@ -186,9 +316,10 @@ for task in ordered:
     tracker = ProgressTracker(project_root=".")
     tracker.print_report(as_code_block=True)  # exibe ✅ / 🔄 / ⏳ para cada task
     print(f"\n🔄 Iniciando: [{task.id}] {task.title}")
-    print(f"   Tópicos: {task.description}")
+    print(f"   História: {task.historia_ref} | Tipo: {task.tipo} | Nível: {task.nivel}")
+    print(f"   Objetivo: {task.objetivo}")
     print(f"   Arquivos: {', '.join(task.files)}")
-    print(f"   EARS:     {', '.join(task.ears_refs)}")
+    print(f"   Diretiva: {task.diretiva_de_teste}")
 
     # Marcar como in_progress
     sm.update_task_status(task.id, "in_progress", files=task.files)
@@ -326,7 +457,7 @@ for task in ordered:
     tracker.print_report(as_code_block=True)  # estado atualizado
 ```
 
-### Passo 5 — Anti-Mock Enforcement (Em CADA arquivo gerado)
+### Passo 6 — Anti-Mock Enforcement (Em CADA arquivo gerado)
 
 Após gerar cada arquivo, execute:
 ```python
@@ -346,7 +477,7 @@ if not result.is_valid:
 - Variáveis com nomes `mock_`, `fake_`, `dummy_`
 - Dependências não declaradas em `requirements.txt` / `package.json`
 
-### Passo 6 — Incremental Validation (Por task)
+### Passo 7 — Incremental Validation (Por task)
 
 **Regra de ouro:** toda task que implementa lógica de domínio **deve incluir seu arquivo de teste** em `task.files`. O arquivo de teste é parte da task, não um passo separado. Se o `task_breaker` não incluiu o `.test.*`, adicione antes de implementar.
 
@@ -359,7 +490,7 @@ Exemplos de task.files corretos:
 ["src/engine/collision.js"]
 ```
 
-O Validation Gate está embutido no loop do Passo 4 (Build → Lint → Tests). Este passo documenta os comandos por stack:
+O Validation Gate está embutido no loop do Passo 5 (Build → Lint → Tests). Este passo documenta os comandos por stack:
 
 ```bash
 # Python
@@ -381,7 +512,7 @@ Se o test runner não está instalado quando a primeira task de lógica for exec
 
 Se falhar: **corrija antes de marcar como completed e antes de commitar.**
 
-### Passo 7 — Session Memory Snapshots
+### Passo 8 — Session Memory Snapshots
 
 ```python
 from memory_manager import MemoryManager
@@ -396,7 +527,7 @@ recovery_prompt = mm.generate_handover_prompt()
 # Use este texto como contexto de recuperação de sessão
 ```
 
-### Passo 8 — Plan Completion
+### Passo 9 — Plan Completion
 
 Quando `sm.is_plan_complete()` retornar `True`:
 ```python
@@ -417,7 +548,8 @@ git push origin feature/{plan_name}
 ```
 .nexus/{plan_name}/
 ├── plan_state.json      ← Estado completo (task por task)
-├── tasks.json           ← Tasks atômicas quebradas do plano
+├── stories.json         ← Histórias geradas dos UCs (UC → Histórias)
+├── tasks.json           ← Tasks atômicas quebradas das histórias
 ├── task_queue.json      ← Fila de tasks ordenada
 ├── session_memory.json  ← Snapshots de recuperação
 ├── execution_log.json   ← Log de cada transição de status

@@ -67,7 +67,15 @@ class ActorEntry:
 
 
 @dataclass
+class FluxoAlternativo:
+    id: str              # e.g., "UC-01.FA1"
+    descricao: str       # Brief description of the alternative flow
+    passos: list[str] = field(default_factory=list)
+
+
+@dataclass
 class UseCaseEntry:
+    id: str              # e.g., "UC-01" — stable ID for downstream reference
     use_case: str
     actors: str
     description: str = ""
@@ -75,11 +83,13 @@ class UseCaseEntry:
 
 @dataclass
 class UCDrilldown:
+    id: str              # e.g., "UC-01" — matches UseCaseEntry.id
     nome: str
     ator: str = ""
     descricao: str = ""
     pre_condicoes: list[str] = field(default_factory=list)
-    fluxo: list[str] = field(default_factory=list)
+    fluxo_principal: list[str] = field(default_factory=list)              # UC-XX.FP steps
+    fluxos_alternativos: list[FluxoAlternativo] = field(default_factory=list)  # UC-XX.FA1, FA2...
     pos_condicoes: list[str] = field(default_factory=list)
     entidades: list = field(default_factory=list)
 
@@ -274,24 +284,30 @@ class PlanGenerator:
                 lines.append("")
             if self._use_case_matrix:
                 lines += ["### 5.3 Matriz de Casos de Uso\n"]
-                lines.append("| UC | Descrição | Ator(es) |")
-                lines.append("|----|-----------|---------|")
+                lines.append("| ID | UC | Descrição | Ator(es) |")
+                lines.append("|----|----|-----------|---------|") 
                 for uc in self._use_case_matrix:
-                    lines.append(f"| {uc.use_case} | {uc.description} | {uc.actors} |")
+                    lines.append(f"| {uc.id} | {uc.use_case} | {uc.description} | {uc.actors} |")
                 lines.append("")
             for drill_idx, drilldown in enumerate(self._uc_drilldowns, 1):
-                lines += [f"### 5.{3 + drill_idx} Drill-down: {drilldown.nome}\n"]
+                lines += [f"### 5.{3 + drill_idx} Drill-down: {drilldown.id} — {drilldown.nome}\n"]
                 if drilldown.ator:
                     lines.append(f"**Ator:** {drilldown.ator}\n")
                 if drilldown.descricao:
                     lines.append(f"**Descrição:** {drilldown.descricao}\n")
                 if drilldown.pre_condicoes:
                     lines += ["**Pré-Condições:**"] + [f"- {pc}" for pc in drilldown.pre_condicoes] + [""]
-                if drilldown.fluxo:
-                    lines.append("**Fluxo:**")
-                    for step_num, step in enumerate(drilldown.fluxo, 1):
+                if drilldown.fluxo_principal:
+                    lines.append(f"**Fluxo Principal ({drilldown.id}.FP):**")
+                    for step_num, step in enumerate(drilldown.fluxo_principal, 1):
                         lines.append(f"{step_num}. {step}")
                     lines.append("")
+                if drilldown.fluxos_alternativos:
+                    for fa in drilldown.fluxos_alternativos:
+                        lines.append(f"**Fluxo Alternativo ({fa.id}): {fa.descricao}**")
+                        for step_num, step in enumerate(fa.passos, 1):
+                            lines.append(f"{step_num}. {step}")
+                        lines.append("")
                 if drilldown.pos_condicoes:
                     lines += ["**Pós-Condições:**"] + [f"- {pc}" for pc in drilldown.pos_condicoes] + [""]
                 if drilldown.entidades:

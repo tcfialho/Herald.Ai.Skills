@@ -31,8 +31,9 @@ constitutional_gate:
     - 'O documento DEVE integrar o Padrão Funcional UML (Diagrama, Dicionário, Matriz, Drill-down).'
     - 'O Diagrama Mermaid de Casos de Uso DEVE usar `graph LR`, atores com `shape: circle` (e emojis), e relações formatadas como `-.-o|extend|` ou `-.-o|include|`.'
     - 'O Dicionário de Atores DEVE ser categorizado em Tabela Markdown: `Ator | Tipo | Responsabilidade`.'
+    - 'A Matriz de Casos de Uso DEVE conter a coluna ID com identificador único no formato UC-XX (ex: UC-01, UC-02). O ID é estável e usado como referência por todas as fases downstream (/proto, /dev).'
     - 'O número de Drill-downs gerados DEVE ser EXATAMENTE IGUAL ao número de UCs listados na Matriz. É estritamente PROIBIDO omitir, resumir ou pular qualquer UC. Faça o drill-down 1:1.'
-    - 'Cada Drill-down de UC DEVE possuir estrutura fixa: Ator, Descrição, Pré-Condições, Fluxo Numerado, Pós-condições e Micro-Dicionário de Entidades Envolvidas.'
+    - 'Cada Drill-down de UC DEVE possuir estrutura fixa: ID (UC-XX), Ator, Descrição, Pré-Condições, Fluxo Principal (UC-XX.FP) numerado, Fluxos Alternativos (UC-XX.FA1, UC-XX.FA2, ...) cada um com ID derivado e passos numerados, Pós-condições e Micro-Dicionário de Entidades Envolvidas.'
     - 'ZERO linhas de código funcional durante /plan — apenas especificação.'
     - 'NUNCA inclua requisito vago sem métrica: substituir "rápido/robusto/fácil" por medidas concretas.'
     - 'O Dicionário de Entidades DEVE ter ao menos uma entrada antes de gerar o spec.md.'
@@ -246,10 +247,20 @@ generator = PlanGenerator(plan_name=plan_name, project_root=project_root)
 generator.add_use_case_diagram("graph LR...") 
 # REQUISITO: Tabela Markdown (Ator | Tipo | Responsabilidade)
 generator.add_actor_dictionary(...)
+# REQUISITO: Matriz com coluna ID (UC-XX) — identificador estável para referência downstream
 generator.add_use_case_matrix(...)
-# REQUISITO: Cada Drill-down obriga -> Ator, Descrição, Pré-Condições, Fluxo Numerado, Pós-condições, Micro-Dicionário de Entidades
+# REQUISITO: Drill-down com ID, Fluxo Principal (UC-XX.FP) + Fluxos Alternativos (UC-XX.FAn)
 for uc in use_cases:
-    generator.add_uc_drilldown(nome=uc.name, fluxo=uc.flow, entidades=uc.entities)
+    generator.add_uc_drilldown(UCDrilldown(
+        id=uc.id,                             # ex: "UC-01"
+        nome=uc.name,
+        fluxo_principal=uc.main_flow,         # passos do fluxo principal
+        fluxos_alternativos=[                 # lista de FluxoAlternativo
+            FluxoAlternativo(id=f"{uc.id}.FA{i}", descricao=fa.desc, passos=fa.steps)
+            for i, fa in enumerate(uc.alt_flows, 1)
+        ],
+        entidades=uc.entities,
+    ))
 
 # 2. Estrutura Nexus Core (EARS, Entities, Invariants, C4)
 # Adicione todos os EARS requirements
@@ -294,7 +305,7 @@ plan_path = generator.generate(assessment, resolver, raw_prompt)
 ## CRITÉRIOS DE SAÍDA DO `/plan`
 
 O `/plan` está COMPLETO quando:
-- [ ] `spec.md` contém a Seção de Casos de Uso completa (Diagrama, Dicionário, Matriz, Drill-downs com fluxos) e Dicionário de Entidades
+- [ ] `spec.md` contém a Seção de Casos de Uso completa (Diagrama, Dicionário, Matriz com IDs UC-XX, Drill-downs com Fluxo Principal UC-XX.FP + Fluxos Alternativos UC-XX.FAn) e Dicionário de Entidades
 - [ ] A contagem de Drill-downs no documento deve obrigatoriamente bater 1:1 com a contagem de UCs listados na Matriz da seção 5.3 (zero omissões).
 - [ ] `spec.md` contém pelo menos 5 EARS requirements
 - [ ] Todas as questões do Discovery Form foram respondidas (ou auto-assumidas)

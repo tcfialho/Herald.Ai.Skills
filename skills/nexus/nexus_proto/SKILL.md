@@ -268,8 +268,7 @@ Quando todas as screens estiverem `decided`, gere `.nexus/{plan_name}/wireframes
 ```
 .nexus/{plan_name}/
 ├── spec.md           ← (existente, gerado pelo /plan)
-├── decisions.json    ← (existente)
-├── assumptions.json  ← (existente)
+├── decision_manifest.json  ← (existente — decisões compactas para propagação)
 ├── proto.json        ← decisões visuais + change request history  [NOVO]
 ├── wireframes.md     ← sumário visual com SVGs finais             [NOVO]
 ├── S01_iter1.svg     ← wireframe A/B salvo para visualização       [NOVO]

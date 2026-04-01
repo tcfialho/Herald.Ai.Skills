@@ -182,8 +182,7 @@ validation:
 Para cada pergunta respondida, execute via `scripts/option_resolver.py`:
 ```python
 resolver = OptionResolver(plan_name=plan_name)
-resolver.record_from_form(form)  # registra todas as decisões
-resolver.save(f".nexus/{plan_name}/decisions.json")
+resolver.record_from_form(form)  # registra todas as decisões (explícitas + auto-assumed)
 ```
 
 **Auto-Assumption:** Se o usuário submeter o formulário sem responder uma pergunta específica (campo em branco, letra "X", traço ou "-") → assume a recomendação e loga imediatamente:
@@ -191,12 +190,11 @@ resolver.save(f".nexus/{plan_name}/decisions.json")
 ⚠️ AUTO-ASSUMED: [Q3] Persistência: PostgreSQL (recomendado — sem resposta do usuário)
 ```
 
-Registre via `assumption_tracker.py`:
-```python
-tracker = AssumptionTracker(plan_name)
-tracker.import_from_resolver(resolver)
-tracker.save(f".nexus/{plan_name}/assumptions.json")
-```
+> **Nota:** O `resolver` é passado diretamente ao `PlanGenerator.generate()` no Passo 6.
+> Ele produz 2 saídas automaticamente:
+> 1. **Markdown rico** no `spec.md` — tabela completa com pergunta, opções, escolha, rationale e risk.
+> 2. **`decision_manifest.json`** — formato compacto consumido por StoryGenerator e TaskBreaker
+>    para propagar decisões em cada story/task, garantindo reforço de contexto para agentes LLM.
 
 ### Passo 5 — EARS Notation Formatting (Awesome Copilot)
 
@@ -295,9 +293,8 @@ plan_path = generator.generate(assessment, resolver, raw_prompt)
 
 ```
 .nexus/{plan_name}/
-├── spec.md           ← Plano completo com EARS (entrega principal)
-├── decisions.json    ← Decisões A/B registradas
-└── assumptions.json  ← Suposições auto-assumidas
+├── spec.md                  ← Plano completo com EARS + decisions inline (entrega principal)
+└── decision_manifest.json   ← Formato compacto para propagação em stories/tasks
 ```
 
 ---
@@ -309,8 +306,8 @@ O `/plan` está COMPLETO quando:
 - [ ] A contagem de Drill-downs no documento deve obrigatoriamente bater 1:1 com a contagem de UCs listados na Matriz da seção 5.3 (zero omissões).
 - [ ] `spec.md` contém pelo menos 5 EARS requirements
 - [ ] Todas as questões do Discovery Form foram respondidas (ou auto-assumidas)
-- [ ] `decisions.json` existe com todas as decisões registradas
-- [ ] `assumptions.json` lista todas as suposições
+- [ ] `spec.md` contém a seção `📋 Decisions Log` com tabela completa (Question + Chosen + Rationale + Risk)
+- [ ] `decision_manifest.json` existe com todas as decisões em formato compacto
 - [ ] Zero requisitos vagos (sem "rápido", "fácil", "robusto" sem métrica)
 
 **Após verificação de todos os critérios, informe ao usuário:**

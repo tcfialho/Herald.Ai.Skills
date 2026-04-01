@@ -3,9 +3,15 @@ Nexus Plan - Plan Generator
 
 Assembles the final spec.md document from:
   - ComplexityAssessment (from prompt_expander)
-  - Resolved decisions (from option_resolver)
+  - Unified decisions (from option_resolver — includes auto-assumptions)
   - EARS requirements collected during discovery
   - Task sketches (later refined by task_breaker)
+
+Also writes decision_manifest.json alongside spec.md.
+This compact manifest is consumed by StoryGenerator and TaskBreaker
+to inject relevant decisions into each story/task context,
+ensuring LLM agents receive decision reinforcement even when
+they don't receive the full spec.md.
 
 The generated plan is written to:
   .nexus/{plan_name}/spec.md
@@ -20,6 +26,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -111,7 +118,6 @@ class PlanGenerator:
         self._component_diagram: str = ""
         self._nfrs: list[str] = []
         self._constraints: list[str] = []
-        self._assumptions: list[str] = []
         self._edge_cases: list[str] = []
         self._task_sketches: list[TaskSketch] = []
         self._acceptance_criteria: list[str] = []
@@ -150,9 +156,6 @@ class PlanGenerator:
 
     def add_constraint(self, constraint: str) -> None:
         self._constraints.append(constraint.strip())
-
-    def add_assumption(self, assumption: str) -> None:
-        self._assumptions.append(assumption.strip())
 
     def add_edge_case(self, edge_case: str) -> None:
         self._edge_cases.append(edge_case.strip())
@@ -223,6 +226,17 @@ class PlanGenerator:
         ensure_dir(specs_dir)
         plan_path = specs_dir / "spec.md"
         write_text(plan_path, content)
+
+        # Write decision manifest for downstream propagation (stories/tasks)
+        if resolver is not None and hasattr(resolver, "to_manifest"):
+            manifest_path = specs_dir / "decision_manifest.json"
+            manifest = {
+                "plan_name": self.plan_name,
+                "decisions": resolver.to_manifest(),
+            }
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2, ensure_ascii=False)
+
         return plan_path
 
     def _render(self, assessment: object, resolver: object, raw_prompt: str) -> str:
@@ -368,12 +382,22 @@ class PlanGenerator:
                 lines.append(f"- {c}")
             lines.append("")
 
-        # Assumptions
-        if self._assumptions:
-            lines += ["## 📌 Assumptions\n"]
-            for a in self._assumptions:
-                lines.append(f"- {a}")
-            lines.append("")
+        # Auto-Assumed Decisions (rich context replaces flat assumptions)
+        if resolver is not None and hasattr(resolver, "get_auto_assumed"):
+            auto_assumed = resolver.get_auto_assumed()
+            if auto_assumed:
+                lines += ["## 📌 Auto-Assumed Decisions\n"]
+                lines.append("> Decisions below were not explicitly answered. "
+                             "The recommended option was applied.")
+                lines.append("")
+                for d in auto_assumed:
+                    lines.append(
+                        f"- **{d.question_id} [{d.category}]:** {d.question}\n"
+                        f"  → **Chosen:** {d.chosen_text} "
+                        f"| **Risk:** {d.risk_emoji} {d.risk} "
+                        f"| **Rationale:** {d.rationale}"
+                    )
+                lines.append("")
 
         # Edge Cases
         if self._edge_cases:

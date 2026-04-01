@@ -1,37 +1,75 @@
 ---
 name: Nexus /dev
-description: Stage 2 do Framework Nexus. Execução contínua e memória persistente. Zero interrupção, zero mocks, zero simplificações. Usa feature branch única, atomic task breakdown (1-3 arquivos), state persistence e anti-interruption engineering.
+description: Stage 2 do Framework Nexus. Execução contínua e memória persistente. Zero interrupção, zero mocks, zero simplificações. Usa feature branch única, atomic task breakdown (1-3 arquivos), backlog.json como fonte de verdade e anti-interruption engineering.
 ---
 
 # ⚡ NEXUS `/dev` — MEMORY-DRIVEN EXECUTION
 
+## 🚦 GATE DE DEPENDÊNCIA (verificar ANTES de qualquer ação)
+
+```
+Pipeline: /plan → /proto (opcional) → /dev → /review
+                                      ^^^^  VOCÊ ESTÁ AQUI
+```
+
+**Dependência obrigatória:** `/plan` concluído (`spec.json` validado com ≥5 EARS, UCs e drill-downs 1:1)
+
+Antes de executar `backlog.py init`:
+1. Verifique se `.nexus/{plan_name}/spec.json` existe
+2. Verifique se o spec foi validado (`spec_builder.py validate` passa)
+
+**Se `spec.json` não existir:** HALT — informe ao usuário:
+> spec.json não encontrado. Execute `/plan` primeiro para gerar a especificação.
+
+**Se `spec.json` estiver incompleto (EARS < 5, sem UCs, sem drill-downs):** HALT — informe ao usuário:
+> spec.json incompleto. Execute `/plan`, finalize a especificação e rode `spec_builder.py validate`.
+
+> O script `backlog.py init` já aplica essas validações automaticamente.
+
+---
+
 ## OBJETIVO
 Executar **TODAS** as tasks do plano sequencialmente, sem interrupção, produzindo código 100% real e funcional, com micro-commits atômicos a cada task completa.
 
-**INVARIANTE ABSOLUTA:** Não pare até que `is_plan_complete()` retorne `True`.
+**INVARIANTE ABSOLUTA:** Não pare até que o backlog atinja 100% de conclusão.
 
 > [!IMPORTANT]
-> **PRIORIDADE MÁXIMA:** A exibição do painel `📊 PROGRESSO` (bloco ```text) antes e depois de **CADA** task é mais importante que a própria implementação do código. Nunca agrupe tasks em um único output de progresso. Se uma resposta não contém o painel atualizado, ela é considerada uma falha crítica de protocolo.
+> **PRIORIDADE MÁXIMA:** A exibição do painel `PROGRESSO` (via `backlog.py progress`) antes e depois de **CADA** task é mais importante que a própria implementação do código. Nunca agrupe tasks em um único output de progresso.
+
+---
+
+## FERRAMENTA CENTRAL: `scripts/backlog.py`
+
+> **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/backlog.py`.
+
+A IA **NUNCA** lê arquivos de estado diretamente (backlog.json, spec.json). Toda leitura e escrita passa por `backlog.py`:
+
+```
+BUILD:    init, add-story, add-criterio, add-task
+EXECUTE:  start, complete, fail
+CONTEXT:  next, context, recovery
+DISPLAY:  progress, show, validate
+```
+
+O `backlog.json` é a **única fonte de verdade** durante `/dev`. Contém: stories, tasks, status, contexto do plano (decisions, EARS, entities) e log de execução.
 
 ---
 
 ## PRÉ-CONDIÇÃO OBRIGATÓRIA
 
 Antes de iniciar qualquer código:
-1. Verifique que `.nexus/{plan_name}/spec.md` existe
-2. **(Opcional)** Se `.nexus/{plan_name}/proto.json` existe → carregue decisões visuais (Passo 2)
-   Se não existe → `ℹ️ /proto não executado — UI gerada sem spec visual.` e siga normalmente
-3. Leia `.nexus/{plan_name}/plan_state.json` — **se existir**, retome a partir da task pendente
-4. Se não existe state, inicialize:
-
-> **ℹ️ `nexus_core`** está em `skills/nexus_core/` — mesmo nível deste diretório.  
-> Os scripts localizam-no automaticamente subindo a árvore de pastas (`_find_nexus_core_root`).
-
-```python
-from nexus_core.state_manager import NexusStateManager
-sm = NexusStateManager(project_root=".")
-sm.create_plan_state(plan_id="nexus_{plan_name}", plan_name="{plan_name}")
+1. Verifique que `.nexus/{plan_name}/spec.json` existe (produzido por `/plan`)
+2. Crie o backlog a partir do spec:
+```bash
+python scripts/backlog.py {project_root}/.nexus/{plan_name}/backlog.json init --spec {project_root}/.nexus/{plan_name}/spec.json
 ```
+> Se `visual.json` existir no mesmo diretório do spec.json, o backlog importa as screens automaticamente.
+3. Se `backlog.json` já existir (sessão retomada), use `recovery`:
+```bash
+python scripts/backlog.py {backlog} recovery
+```
+
+> `{backlog}` é atalho para `{project_root}/.nexus/{plan_name}/backlog.json` nos exemplos a seguir.
 
 ---
 
@@ -46,524 +84,261 @@ git pull origin main
 git checkout -b feature/{plan_name}
 ```
 
-Registre a branch no state:
-```json
-{ "feature_branch": "feature/{plan_name}" }
-```
-
 ### Passo 2 — Story Generation (UCs → Histórias)
 
-Antes de quebrar em tasks, gere **Histórias de Usuário** a partir dos fluxos do spec.md.
+Leia o spec.json (via contexto mental do `/plan`) e gere **Histórias de Usuário** a partir dos fluxos.
 Cada fluxo de cada UC (principal + alternativos) produz **exatamente uma história**.
 
-Execute `scripts/story_generator.py`:
-```python
-from story_generator import StoryGenerator
-sg = StoryGenerator(plan_path=".nexus/{plan_name}/spec.md")
-stories = sg.generate_stories()
-sg.save(f".nexus/{plan_name}/stories.json")
+**Regras de geração:**
+1. **1 Fluxo = 1 História.** UC-01 com fluxo principal + 2 alternativos → 3 histórias.
+2. **ID derivado do UC:** `US-UC01-FP` (fluxo principal), `US-UC01-FA1` (alternativo 1), etc.
+3. **Critérios de Aceitação em Gherkin:** Cada história DEVE ter ao menos 1 critério.
+
+Registre cada história e seus critérios via `backlog.py`:
+```bash
+python scripts/backlog.py {backlog} add-story --id US-UC01-FP --uc-ref UC-01 --fluxo-id UC-01.FP --descricao "Criar tarefa com titulo e prioridade"
+
+python scripts/backlog.py {backlog} add-criterio --story US-UC01-FP --dado "usuario na tela de lista" --quando "preenche titulo e clica Criar" --entao "tarefa aparece na lista com status pendente"
 ```
 
-**Regras de geração de Histórias:**
-1. **1 Fluxo = 1 História.** Se o UC-01 tem fluxo principal + 2 alternativos → 3 histórias.
-2. **Referência filho → pai:** Cada história referencia o UC de origem (`uc_ref: "UC-01"`). O UC **nunca** referencia a história.
-3. **ID derivado do UC:** `US-UC01-FP` (fluxo principal), `US-UC01-FA1` (alternativo 1), etc.
-4. **Descrição breve:** Apenas para fins visuais (1 linha). A fonte da verdade é o UC no spec.md.
-5. **Critérios de Aceitação em Gherkin:** Cada história DEVE ter ao menos 1 critério.
-
-**Formato obrigatório de uma História:**
-```yaml
-id: "US-UC01-FP"
-uc_ref: "UC-01"                    # Pai (fonte da verdade no spec.md)
-fluxo_id: "UC-01.FP"              # ID do fluxo no drill-down do UC
-descricao_breve: "Criar tarefa com título e prioridade"
-criterios_aceitacao:
-  - dado: "o usuário está na tela de lista de tarefas"
-    quando: "preenche o título e clica em Criar"
-    entao: "a tarefa aparece na lista com status pendente"
-  - dado: "o campo título está vazio"
-    quando: "clica em Criar"
-    entao: "exibe mensagem de validação e não cria a tarefa"
+**OBRIGAÇÃO DE EXIBIÇÃO:** Após registrar todas as histórias:
+```bash
+python scripts/backlog.py {backlog} show
 ```
-
-Registre as histórias no state:
-```python
-sm.register_stories([{"id": s.id, "uc_ref": s.uc_ref, "fluxo_id": s.fluxo_id} for s in stories])
-```
-
-**OBRIGAÇÃO DE EXIBIÇÃO:** Após gerar as histórias, exiba o inventário completo:
-
-````text
-📖 HISTÓRIAS GERADAS: {plan_name}
-   Total: {N} histórias | {M} UCs cobertos
-
-   📄 [US-UC01-FP] Criar tarefa (Fluxo Principal)
-       UC Ref: UC-01 | Fluxo: UC-01.FP
-       Gherkin: 2 critérios de aceitação
-
-   📄 [US-UC01-FA1] Criar tarefa sem título (Fluxo Alternativo 1)
-       UC Ref: UC-01 | Fluxo: UC-01.FA1
-       Gherkin: 1 critério de aceitação
-
-   📄 [US-UC02-FP] Marcar tarefa como concluída (Fluxo Principal)
-       UC Ref: UC-02 | Fluxo: UC-02.FP
-       Gherkin: 2 critérios de aceitação
-   ...
-````
 
 ### Passo 3 — Task Queue Generation (Histórias → Tasks Atômicas)
 
-Execute `scripts/task_breaker.py` a partir das histórias geradas:
-```python
-from task_breaker import TaskBreaker
-breaker = TaskBreaker(
-    plan_path=".nexus/{plan_name}/spec.md",
-    stories_path=".nexus/{plan_name}/stories.json",
-)
-tasks = breaker.break_tasks()
-breaker.save(f".nexus/{plan_name}/tasks.json")
+Para cada história, quebre em tasks atômicas e registre via `backlog.py`:
+```bash
+python scripts/backlog.py {backlog} add-task --story-ref US-UC01-FP --id TASK-001 --title "Criar schema da tabela Tarefa" --tipo "Dados" --nivel 0 --objetivo "Criar migration com tabela tarefas" --pre-condicao "Nenhuma" --pos-condicao "Tabela tarefas existe no banco" --diretiva "Integracao" --verify-cmd "python -m pytest tests/test_schema.py -x -q" --files "src/migrations/001.sql" "tests/test_schema.py" --ears-refs "REQ-01"
 ```
 
-**(Automático) Enriquecimento de referências cruzadas:**
-
-O `StoryGenerator` e o `TaskBreaker` carregam automaticamente `proto.json` e `decision_manifest.json` (se existirem no mesmo diretório do `spec.md`). Cada story e task recebe:
-- `decision_context[]` → decisões de planejamento do `/plan`
-- `proto_refs[]` → decisões visuais do `/proto` (seletivas por UC — apenas screens cujo `source_ucs` intersecta com o UC da story/task)
-
-**Após atribuir `historia_ref` nas tasks, propague `proto_refs` das stories-pai:**
-```python
-from task_breaker import TaskBreaker
-TaskBreaker.enrich_from_stories(
-    tasks=tasks,
-    stories_path=f".nexus/{plan_name}/stories.json",
-)
-# Re-salva tasks com proto_refs herdados das stories
-breaker.save(f".nexus/{plan_name}/tasks.json")
-```
-
-> **Nota:** Se `proto.json` não existir, `proto_refs` fica `[]` — sem impacto no fluxo.
-
-**Estrutura obrigatória de uma Task:**
-```yaml
-id: "TASK-001"
-title: "Criar schema da tabela Tarefa"
-historia_ref: "US-UC01-FP"        # Pai — referência à história (child → parent)
-tipo: "Dados"                     # Dados | UI | API | Integração
-nivel: 0                          # 0=sem bloqueios | 1=dep simples | 2=dep composta
-
-objetivo: "Criar migration com tabela `tarefas` contendo colunas id, titulo, prioridade, status, created_at"
-
-pre_condicao:
-  - "Nenhuma — Nível 0"           # OU artefatos reais de tasks anteriores
-
-pos_condicao:
-  - "Tabela `tarefas` existe no banco com todas as colunas"
-  - "Migration é reversível (up/down)"
-
-diretiva_de_teste: "Integração"   # Teste bate no banco real + teardown
-
-verify_cmd: "python -m pytest tests/integration/test_tarefas_schema.py -x -q"  # Comando de verificação para o SubmitGate
-
-files: ["src/migrations/001_create_tarefas.sql", "tests/integration/test_tarefas_schema.py"]
-dependencies: []                  # IDs de tasks que devem estar completas antes
-ears_refs: ["FR-01"]              # EARS requirements cobertos
-```
-
-> ⚠️ **REGRA DO `verify_cmd`:** Todo task DEVE ter um `verify_cmd` preenchido no momento da criação pelo TaskBreaker.
-> O comando deve ser o **test runner real** da stack detectada (pytest, vitest, dotnet test, go test, cargo test, mvn test, etc.).
-> O agente é **PROIBIDO** de alterar o `verify_cmd` depois de definido. Ele é a âncora de verificação do SubmitGate.
-
-**Regras de Fatiamento por Camada Técnica (Granularidade):**
-
-A Task **nunca resolve um fluxo inteiro** — resolve uma engrenagem. A quebra técnica padrão separa o escopo em caixas-pretas isoladas:
+**Regras de Fatiamento por Camada Técnica:**
 
 | Tipo | Escopo | Exemplo |
 |------|--------|---------|
-| **Dados** | Apenas queries, schemas, persistência | Criar tabela, escrever query de inserção |
-| **UI** | Apenas componente visual "burro", zero lógica de rede | Montar formulário HTML, renderizar lista |
-| **API** | Apenas recebimento do payload, validação e repasse para dados | Rota POST, validar campos, chamar repo |
-| **Integração** | O "fio" que liga UI (clique) à API (fetch/axios) | onClick → fetch → atualizar DOM |
+| **Dados** | Queries, schemas, persistência | Criar tabela, escrever query |
+| **UI** | Componente visual, zero lógica de rede | Montar formulário, renderizar lista |
+| **API** | Recebimento de payload, validação, repasse | Rota POST, validar campos |
+| **Integração** | Fio que liga UI à API | onClick → fetch → atualizar DOM |
 
-**Regras de Ordenação por Grafo de Dependências (Níveis):**
+**Regras de Ordenação por Dependências:**
 
 | Nível | Regra | Exemplo |
 |-------|-------|---------|
-| **0** (Sem Bloqueios) | Não depende de código anterior. Pode executar imediatamente. | Criar tabela, montar HTML base |
-| **1** (Dep Simples) | Exige artefato do Nível 0 pronto. | Endpoint API que precisa do schema |
-| **2** (Dep Composta) | Exige artefatos de níveis anteriores. | Integração final (UI + API prontos) |
+| **0** | Sem bloqueios. Executa imediatamente. | Criar tabela, montar HTML base |
+| **1** | Exige artefato do Nível 0 pronto. | Endpoint que precisa do schema |
+| **2** | Exige artefatos de níveis anteriores. | Integração final (UI + API prontos) |
+
+Use `--dependencies` para declarar dependências:
+```bash
+python scripts/backlog.py {backlog} add-task --story-ref US-UC01-FP --id TASK-003 ... --dependencies TASK-001 TASK-002
+```
 
 **Regra do "Zero Mocks" (Pré-condições Físicas):**
+A Pré-condição de uma Task **nunca é simulada**. Se a Task da API depende do Banco de Dados, o código **real** gerado pela Task do BD é o contexto obrigatório. A IA é **proibida** de criar stubs ou mocks para simular integrações internas.
 
-A Pré-condição de uma Task **nunca é teórica ou simulada**. Se a Task da API depende do Banco de Dados, o código **real e funcional** gerado pela Task do Banco de Dados torna-se o contexto obrigatório de entrada. A IA é **terminantemente proibida** de criar stubs ou mocks para simular integrações internas.
+**Dois tipos de teste no `/dev`:**
 
-**Contrato de Pós-condição Fechado:**
+| Tipo | Quando criar | Filosofia | Mock permitido |
+|------|-------------|-----------|----------------|
+| **Unitário (TDD)** | Tasks de nível 0/1 (Dados, UI, API) | Escreve teste ANTES de implementar → implementa até ficar verde | Zero — código real |
+| **Integração/Aceitação (Gherkin)** | Tasks de nível 2 (Integração) | Caixa-preta testando critérios dado/quando/então da história | Apenas recursos externos (DB, APIs externas, filesystem) |
 
-A Pós-condição é técnica, verificável e binária. Sem linguagem de negócio ("o usuário fica feliz"). Deve ditar **exatamente** a alteração de estado do sistema:
-- `"Retorna HTTP 201 com body { id, titulo, status }"`
-- `"Emite evento 'tarefa-criada' com payload { id }"`
-- `"Salva registro na tabela tarefas com status = 'pendente'"`
+**Regra TDD:** Para tasks de lógica de domínio, a IA DEVE escrever o teste unitário PRIMEIRO, verificar que falha (red), implementar o código até passar (green), e só então reportar no `complete`.
 
-**Blindagem de Testes (Diretiva por Tipo de Task):**
+**Regra Gherkin:** Para cada critério de aceitação registrado via `add-criterio` (dado/quando/então), DEVE existir ao menos um teste de integração caixa-preta que o cubra. Esses testes vivem nas tasks de Integração (nível 2) e testam o fluxo completo da história.
 
-| Tipo de Task | Diretiva | Regra |
-|-------------|----------|-------|
-| **Dados** | `Integração` | Teste bate no banco real, faz limpeza (teardown) |
-| **API** | `Integração` | Teste levanta servidor, envia request real, valida response |
-| **UI** | `Componente` | Teste renderiza componente, valida DOM/eventos |
-| **Integração** | `E2E` | Teste exercita fluxo completo (UI → API → Dados) |
+**Regra Atômica:** Cada task toca no **máximo 3 arquivos**.
 
-**Regra Atômica:** Cada micro-commit toca no **máximo 3 arquivos**. Isso não limita a complexidade da task — limita o escopo de cada commit individual para garantir reversibilidade.
+> ⚠️ **REGRA DO `verify_cmd`:** Todo task DEVE ter um `verify_cmd` preenchido.
+> O comando deve ser o **test runner real** da stack (pytest, vitest, jest, etc.).
+> O agente é **PROIBIDO** de alterar o `verify_cmd` depois de definido.
 
-Registre todas as tasks no state:
-```python
-sm.register_tasks([{
-    "id": t.id,
-    "title": t.title,
-    "historia_ref": t.historia_ref,
-    "tipo": t.tipo,
-    "nivel": t.nivel,
-    "files": t.files,
-} for t in tasks])
+**Validação e exibição obrigatória após registrar todas as tasks:**
+```bash
+python scripts/backlog.py {backlog} validate
+python scripts/backlog.py {backlog} progress
 ```
 
-**OBRIGAÇÃO DE INÍCIO (HARD STOP):** No primeiro output da rotina `/dev`, você é OBRIGADO a imprimir o plano de execução completo no chat com visão hierárquica **História → Task**, contendo **absolutamente todas as tasks**, organizadas por História, ANTES de iniciar a primeira task.
-⚠️ **FORMATAÇÃO EXATA OBRIGATÓRIA:**
+### Passo 4 — Anti-Interruption Execution Loop
 
-````text
-📋 PLANO DE EXECUÇÃO: {plan_name}  [ 0% ]
+**ESTE LOOP NÃO TEM BREAK PREMATURO. Execute até o final.**
 
-📖 [US-UC01-FP] Fluxo principal: Criar tarefa
-  ⏳ ⚪ [TASK-001] Criar schema da tabela Tarefa [Dados]
-  ⏳ ⚪ [TASK-002] Implementar formulário de criação [UI]
-  ⏳ ⚪ [TASK-003] Criar endpoint POST /api/tarefas [API]
+Para cada iteração:
 
-📖 [US-UC01-FA1] Criar tarefa sem título
-  ⏳ ⚪ [TASK-004] Validação de campos obrigatórios [API]
+```
+1. Obter próxima task (respeita dependências automaticamente):
+   python scripts/backlog.py {backlog} next
 
-📖 [US-UC02-FP] Fluxo principal: Marcar concluída
-  ⏳ ⚪ [TASK-005] Endpoint PATCH /api/tarefas/:id [API]
-  ⏳ ⚪ [TASK-006] Integração UI → API de conclusão [Integração]
-````
+2. Marcar como in_progress:
+   python scripts/backlog.py {backlog} start TASK-XXX
 
-### Passo 4 — Priority Queue Ordering
+3. Exibir progresso no chat:
+   python scripts/backlog.py {backlog} progress
 
-**REGRA:** `PriorityQueue` é a **única fonte de verdade** para ordenação de tasks em execução.
-`TaskBreaker.get_ordered_queue()` é **PROIBIDO** para execução — usa ordenação por prioridade sem respeitar dependências, podendo executar uma task antes de suas dependências estarem completas. Use exclusivamente:
+4. IMPLEMENTAR A TASK:
+   - Código 100% real (zero mocks, zero TODOs)
+   - Error handling completo
+   - Sem return {} ou pass vazio
 
-```python
-from priority_queue import PriorityQueue
-pq = PriorityQueue(project_root=".")
-ordered = pq.build_from_task_file(f".nexus/{plan_name}/tasks.json")
+5. VALIDATION GATE (antes de completar):
+   PASSO A — Build/Compile
+   PASSO B — Lint/Type-check
+   PASSO C — Executar testes da task e anotar resultado (quantos passaram/falharam)
+   PASSO D — Resolução de dependências no ambiente real
+
+6. Completar a task (claims explícitas + auditoria automática):
+   python scripts/backlog.py {backlog} complete TASK-XXX \
+     --test-files tests/test_schema.py tests/test_api.py \
+     --test-passed 3 --test-failed 0 \
+     --project-root {project_root}
+   
+   A IA declara os resultados via argumentos. O script audita:
+     GATE 1 — task.files existem no disco
+     GATE 2 — anti-mock scan nos arquivos de implementação
+     GATE 3 — test-files existem no disco
+     GATE 4 — test-failed == 0 e test-passed > 0
+   O script gera automaticamente evidence/{TASK-XXX}.json com claims + audit.
+   
+   SE REJEITADO: corrija e re-submeta. Não avance.
+   SE CIRCUIT BREAKER (3 falhas): HALT e peça ajuda ao usuário.
+   
+   Para registrar falha explicitamente:
+   python scripts/backlog.py {backlog} fail TASK-XXX --error "descricao do erro"
+
+7. Micro-commit atômico (somente se complete aceito):
+   git add -A && git commit -m "feat(scope): descricao"
+
+8. Exibir progresso atualizado no chat:
+   python scripts/backlog.py {backlog} progress
 ```
 
-### Passo 5 — Anti-Interruption Execution Loop
+**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP):**
+Em todas as iterações, exiba o output de `progress` no chat. A saída do progress é texto que você **copia para a resposta** do chat.
 
-**ESTE LOOP NÃO TEM BREAK PREMATURE. Execute até o final mantendo a OBRIGAÇÃO VISUAL nas respostas do chat.**
+**Regra de ouro do layout:** Histórias 100% completas aparecem resumidas em uma linha (`[DONE]`). Histórias com tasks pendentes são expandidas com status por task.
 
-**CICLO DE STATUS OBRIGATÓRIO (PRIORIDADE CRÍTICA) — sem exceções:**
-```
-┌──────────────────────────────────────────────────┐
-│  Tasks nascem como:  ⏳ pending                  │
-│                                                  │
-│  AO INICIAR uma task:                            │
-│    1. sm.update_task_status(id, "in_progress")   │
-│       → status vira: 🔄 in_progress              │
-│    2. ⚠️ HARD STOP — EMITA NO CHAT:             │
-│       Escreva no corpo da sua RESPOSTA o bloco   │
-│       ```text com o painel 📊 PROGRESSO          │
-│       atualizado. Isto NÃO é um script.          │
-│       É texto que você digita na resposta.       │
-│                                                  │
-│  AO FINALIZAR uma task:                          │
-│    1. sm.update_task_status(id, "completed")     │
-│       → status vira: ✅ completed                │
-│    2. ⚠️ HARD STOP — EMITA NO CHAT:             │
-│       Escreva no corpo da sua RESPOSTA o bloco   │
-│       ```text com o painel 📊 PROGRESSO          │
-│       atualizado. Isto NÃO é um script.          │
-│       É texto que você digita na resposta.       │
-└──────────────────────────────────────────────────┘
-```
+### Passo 4.1 — Protocolo de Auto-Correção (quando `complete` rejeita)
 
-**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP):** Em absolutamente todas as iterações onde uma task avançar ou for iniciada, você tem a OBRIGAÇÃO INEGOCIÁVEL de exibir a UI hierárquica com o painel de transição no Chat.
-⚠️ **NUNCA OMITA E NÃO ABREVIE A LISTA.** Os ícones (✅/🔄/⏳) e os indicadores de verificação (🟢/🔴/⚪) devem refletir a exatidão do momento atual da state machine. Use text block (` ```text `):
-⚠️ **REGRA DE OURO DO LAYOUT:** Modelos 100% concluídos devem ser resumidos em UMA linha (`✅ [História]`). Módulos `🔄` ou `⏳` precisam ser expandidos. Todo o progresso exibido DEVE estar dentro de um **bloco de código Markdown** (` ```text `).
+**PRINCÍPIO CONSTITUCIONAL:** Rejeição do `complete` é SEMPRE consequência de falha no SEU código ou nas suas claims. O script NUNCA está errado — ele audita o que você produziu. Trate toda rejeição como feedback sobre o SEU output, não como erro genérico.
 
-> ⚠️ **DISTINÇÃO CRÍTICA:** `tracker.print_report()` no loop Python é apenas referência lógica. A **emissão real** do painel é texto que você, o agente, escreve diretamente no chat — não o resultado de um comando no terminal. Atualizar o `plan_state.json` e exibir o painel são dois atos separados. O primeiro **não implica** o segundo. **Ambos são obrigatórios.**
+**Quando `complete` retornar `REJEITADO`, siga OBRIGATORIAMENTE:**
 
-````text
-📊 PROGRESSO: todo-app  [ 38% ]
+1. **LEIA** a mensagem completa de rejeição (gate + detalhe)
+2. **DIAGNOSTIQUE** — inspecione o arquivo/linha citado ou releia o contexto:
+   ```bash
+   python scripts/backlog.py {backlog} context --task TASK-XXX
+   ```
+3. **CORRIJA** o problema específico (veja tabela abaixo)
+4. **VERIFIQUE LOCALMENTE** (build + testes passando) ANTES de re-submeter
+5. **RE-SUBMETA** o `complete` com claims atualizadas
 
-✅ [US-UC01-FP] Fluxo principal: Criar tarefa (2/2)
+| Gate | Causa típica | O que fazer |
+|------|-------------|------------|
+| **FILES** | Arquivo declarado em `task.files` não foi criado no disco | Crie o arquivo faltante. Se o path está errado no código, corrija o código — NÃO altere a definição da task. |
+| **MOCKS** | Código de implementação contém placeholder (`pass`, `TODO`, `return {}`) | Abra o arquivo:linha indicado na rejeição. Substitua o placeholder por implementação real. Releia o objetivo da task se necessário. |
+| **TESTS** | Arquivo de teste declarado em `--test-files` não existe no disco | Crie o arquivo de teste. Se esqueceu de criá-lo, siga o ciclo TDD: escreva o teste primeiro, depois implemente. |
+| **TEST_RESULT** | Testes falhando ou nenhum teste executado | Execute o `verify_cmd` da task. Leia o traceback completo. Corrija o bug no código (não no teste, a menos que o teste esteja errado). Re-execute e confirme 0 falhas antes de re-submeter. |
 
-📖 [US-UC01-FA1] Criar tarefa sem título
-  ✅ 🟢 [TASK-003] Mock do formulário vazio [UI]
-  🔄 🔴 [TASK-004] Validação de campos obrigatórios [API] ← EXECUTANDO (⚠️ 1x falha)
-  ⏳ ⚪ [TASK-005] Tratamento de erro UI [UI]
+**Escalação progressiva (o script informa a tentativa no output):**
+- **Tentativa 2 (mesmo gate):** Releia o contexto completo da task via `context --task`. Sua correção anterior não resolveu — mude a abordagem fundamentalmente.
+- **Tentativa 3 (circuit breaker):** HALT. Informe ao usuário exatamente qual gate falha, o que você tentou nas 2 tentativas anteriores, e por que não conseguiu resolver.
 
-📖 [US-UC02-FP] Fluxo principal: Marcar concluída
-  ⏳ ⚪ [TASK-006] Endpoint PATCH /api/tarefas/:id [API]
-  ⏳ ⚪ [TASK-007] Componente de checkbox [UI]
-  ⏳ ⚪ [TASK-008] Integração UI → API de conclusão [Integração]
-````
+---
 
-```python
-for task in ordered:
-    # --- PAINEL ANTES DA TASK ---
-    tracker = ProgressTracker(project_root=".")
-    tracker.print_report(as_code_block=True)  # exibe ✅ / 🔄 / ⏳ para cada task
-    print(f"\n🔄 Iniciando: [{task.id}] {task.title}")
-    print(f"   História: {task.historia_ref} | Tipo: {task.tipo} | Nível: {task.nivel}")
-    print(f"   Objetivo: {task.objetivo}")
-    print(f"   Arquivos: {', '.join(task.files)}")
-    print(f"   Diretiva: {task.diretiva_de_teste}")
+### Passo 5 — Anti-Mock Enforcement & Evidence Model
 
-    # Marcar como in_progress
-    sm.update_task_status(task.id, "in_progress", files=task.files)
+O comando `complete` opera no modelo **"IA declara, Script audita"**:
 
-    # === PASSO 0 — Proto Compliance Gate (OPCIONAL) ===
-    # Apenas se task.proto_refs não estiver vazio (proto.json presente e UC com match).
-    # SE existe:
-    #   Para cada screen em task.proto_refs, verifique que o componente respeita:
-    #     - screen["dimension"]        → a dimensão decidida (ex: filtros no topo)
-    #     - screen["chosen"]           → variante escolhida (A ou B)
-    #     - screen["chosen_intent"]    → intenção da variante escolhida
-    #     - screen["change_requests"]  → ajustes aplicados (ex: pills altura 18px)
-    #   SE o código divergir: corrija antes de continuar.
-    # SE vazio: N/A — pule.
+1. **A IA executa os testes** e reporta o resultado via `--test-passed` / `--test-failed`
+2. **O script audita** as claims da IA (arquivos existem? mocks? testes reportados como passando?)
+3. **O script gera** `evidence/{TASK-XXX}.json` automaticamente com o dossiê completo
 
-    # === IMPLEMENTAR TASK AQUI ===
-    # Siga os tópicos e subtópicos da task exatamente
-    # Código 100% real (zero mocks, zero TODOs)
-    # Error handling completo
-    # Sem return {} ou pass vazio
-    
-    # Checkpoint a cada 3 arquivos criados
-    if progress_tracker.should_checkpoint(files_since_last_checkpoint, interval=3):
-        mm.save_snapshot(sm.load_state(), label=f"checkpoint-{task.id}")
+O anti-mock scan varre **apenas arquivos de implementação** (exclui test files declarados em `--test-files`), buscando: `# TODO`, `# FIXME`, `pass`, `raise NotImplementedError`, `return {}`, `return []`, `mock_`, `fake_`, `dummy_`
 
-    # ══════════════════════════════════════════════════════
-    # VALIDATION GATE — obrigatório antes de completed
-    # NÃO pule nenhum passo. NÃO marque completed com falha.
-    # ══════════════════════════════════════════════════════
-    #
-    # PASSO A — Build / Compile
-    #   Python : python -m py_compile {arquivo}
-    #   JS/TS  : npx tsc --noEmit   OU   node --check {arquivo}
-    #   Outro  : use o build system detectado por build_system.py
-    #   → Se falhar: corrija AGORA antes de continuar.
-    #
-    # PASSO B — Lint / Type-check
-    #   Python : python -m flake8 {arquivo} (se disponível)
-    #   TS     : npx tsc --noEmit
-    #   → Warnings são aceitáveis; erros bloqueiam.
-    #
-    # PASSO C — Testes da task
-    #   Execute o(s) arquivo(s) de teste criados NESTA task.
-    #   Python : python -m pytest {test_file} -x -q
-    #   JS/TS  : npx vitest run {test_file} OU npx jest {pattern}
-    #   → Se não existe test runner: instale antes de continuar
-    #     (veja task_breaker: tasks com lógica de domínio DEVEM
-    #     ter um arquivo .test.* listado em task.files)
-    #   → Pass rate deve ser 100% para a task atual.
-    #   → Se falhar: corrija o código OU o teste — nunca ignore.
-    #
-    # PASSO D — Resolução de dependências no ambiente de execução real
-    #
-    #   PRINCÍPIO: o agente não assume que porque algo funciona localmente
-    #   (no processo do agente, no Node, no terminal), também funcionará
-    #   onde o código realmente executa. Antes de commitar, prove que cada
-    #   dependência externa do arquivo é resolvível no ambiente correto.
-    #
-    #   QUANDO SE APLICA: sempre que algum arquivo da task consumir qualquer
-    #   recurso que não é declarado dentro do próprio arquivo.
-    #
-    #   PASSO D.1 — Identifique o ambiente de execução real do arquivo:
-    #     • Browser         (carregado via <script> ou bundler no browser)
-    #     • Node/Deno       (executado como processo servidor ou CLI)
-    #     • Python runtime  (executado pelo interpretador Python)
-    #     • Container       (Docker / ambiente isolado com env vars próprias)
-    #     • Serverless      (Lambda, Cloud Function — ambiente efêmero)
-    #     • Outro           (documente explicitamente)
-    #
-    #   PASSO D.2 — Liste cada dependência externa consumida pelo arquivo.
-    #   Uma dependência externa é QUALQUER coisa que o arquivo usa mas não
-    #   define. Categorias universais:
-    #
-    #     MÓDULOS / PACOTES
-    #       import X from 'lib'  →  lib instalada em node_modules?
-    #       from lib import X    →  lib em requirements.txt e instalada?
-    #       require('X')         →  pacote existe no ambiente de execução?
-    #
-    #     SÍMBOLOS GLOBAIS
-    #       Uso de X sem declaração local  →  quem injeta X no escopo?
-    #       (browser: CDN, outro <script>; Node: global, built-in; Python: builtin)
-    #       X disponível ANTES da primeira linha que o usa?
-    #
-    #     VARIÁVEIS DE AMBIENTE
-    #       process.env.X / os.environ['X']  →  X definida no .env ou no runtime?
-    #       Listar todas as env vars consumidas e verificar que existem.
-    #
-    #     RECURSOS DO FILESYSTEM
-    #       readFile('./config.json') / open('data.csv')  →  arquivo existe?
-    #       Caminho relativo correto a partir do cwd real de execução?
-    #
-    #     CONTRATOS DE REDE / IPC
-    #       fetch('/api/users')  →  essa rota foi implementada neste ou em task anterior?
-    #       socket.connect(host, port)  →  serviço está disponível no ambiente alvo?
-    #
-    #     SCHEMAS / BANCO DE DADOS
-    #       ORM model / query  →  tabela/coluna existe na migration já aplicada?
-    #
-    #   PASSO D.3 — Para cada dependência listada, verifique 2 invariantes:
-    #     I. EXISTE no ambiente de execução real (não só localmente)
-    #     II. ESTÁ DISPONÍVEL ANTES da primeira referência (ordem de init)
-    #
-    #   PASSO D.4 — Se qualquer invariante falhar: corrija agora.
-    #   Não existe "vou resolver depois". Task com dependência não resolvida
-    #   é task incompleta — não commita, não marca completed.
-    #
-    #   Exemplos de falha e correção por categoria:
-    #     Módulo ausente    → instale (npm i X / pip install X) e adicione ao manifesto
-    #     Global fora de ordem → mova a declaração/carregamento para antes do uso
-    #     Env var faltando  → adicione ao .env.example e documente como obrigatória
-    #     Arquivo inexistente → crie o arquivo ou corrija o caminho
-    #     Rota não implementada → implemente nesta task ou adicione nova task ao plano
-    #     Schema ausente    → crie a migration e aplique antes de testar
-    #
-    # SAÍDA ESPERADA após PASSOS A-D:
-    #   ✅ Build: PASS
-    #   ✅ Lint:  PASS (ou N/A)
-    #   ✅ Tests: {N} passed, 0 failed
-    #   ✅ Deps:  todas as dependências externas resolvíveis no ambiente real
-    #             (lista explícita ou "N/A — arquivo sem dependências externas")
-    #
-    # Somente após confirmação acima → submeter ao SubmitGate.
+Se qualquer gate falhar, o `complete` rejeita a transição e incrementa o contador de falhas.
 
-    # ══════════════════════════════════════════════════════
-    # SUBMIT GATE — Evidence Before Claims
-    # ══════════════════════════════════════════════════════
-    # O agente é PROIBIDO de chamar sm.update_task_status("completed") diretamente.
-    # A ÚNICA forma de marcar uma task como completed é através do SubmitGate.
-    # O SubmitGate lê o verify_cmd do tasks.json, varre os arquivos contra mocks,
-    # valida que testes referenciam implementações reais, e executa o verify_cmd.
-    # Somente se TODAS as fases passarem, o estado transiciona para completed.
-    #
-    # PROIBIDO: sm.update_task_status(task.id, "completed")  ← NUNCA FAÇA ISSO
-    # OBRIGATÓRIO:
-    from nexus_core.submit_gate import SubmitGate
-    gate = SubmitGate(project_root=".", plan_name="{plan_name}")
-    submit_result = gate.submit(task.id)
-    print(submit_result.summary())
-    #
-    # SE submit_result.is_accepted == False:
-    #   → NÃO commite. NÃO avance. Corrija o código e re-submeta.
-    #   → Se circuit breaker ativado (3 falhas): HALT IMEDIATO.
-    #     Transcreva o erro ao Usuário e peça consultoria humana.
-    #
-    # SE submit_result.is_accepted == True:
-    #   → O SubmitGate já alterou o plan_state.json internamente.
-    #   → Prossiga com o micro-commit:
-    #
-    # ══════════════════════════════════════════════════════
-
-    # Micro-commit atômico (somente se submit aceito)
-    commit_msg = CommitMessageBuilder.build_from_task(task, commit_type="feat")
-    # git add -A && git commit -m "{commit_msg}"
-
-    # Snapshot de memória
-    mm.save_snapshot(sm.load_state(), label=f"completed-{task.id}")
-
-    # --- PAINEL DEPOIS DA TASK ---
-    print(f"\n✅ [{task.id}] {task.title} — COMPLETED")
-    tracker.print_report(as_code_block=True)  # estado atualizado
-```
-
-### Passo 6 — Anti-Mock Enforcement (Embutido no SubmitGate)
-
-> ⚠️ **MUDANÇA ARQUITETURAL:** A verificação anti-mock agora é executada automaticamente
-> pelo `SubmitGate` durante a fase de submissão. O agente NÃO precisa chamá-la separadamente.
-> O SubmitGate varre TODOS os `task.files` buscando indicadores de mock/placeholder
-> (`# TODO`, `# FIXME`, `pass`, `raise NotImplementedError`, `return {}`, `mock_`, etc.)
-> **antes** de executar o `verify_cmd`. Se encontrar qualquer indicador, a submissão é rejeitada.
->
-> Adicionalmente, o SubmitGate valida que arquivos de teste (`*.test.*`, `test_*`, `*Test.*`)
-> realmente importam/referenciam os arquivos de implementação da mesma task,
-> prevenindo testes "dummy" que passam mas não testam nada real.
->
-> O agente continua PROIBIDO de usar os seguintes padrões em código gerado:
-
-**PROIBIDO absolutamente:**
+**PROIBIDO absolutamente em código de implementação:**
 - `# TODO`, `# FIXME`
 - `pass` em corpo de função
 - `raise NotImplementedError`
 - `return {}`, `return []` como implementação real
 - Variáveis com nomes `mock_`, `fake_`, `dummy_`
-- Dependências não declaradas em `requirements.txt` / `package.json`
 
-### Passo 7 — Incremental Validation (Por task)
+### Passo 6 — Incremental Validation (Por task)
 
-**Regra de ouro:** toda task que implementa lógica de domínio **deve incluir seu arquivo de teste** em `task.files`. O arquivo de teste é parte da task, não um passo separado. Se o `task_breaker` não incluiu o `.test.*`, adicione antes de implementar.
-
-Exemplos de task.files corretos:
+Toda task que implementa lógica de domínio **deve incluir seu arquivo de teste** em `task.files`:
 ```
-# ✅ correto
-["src/engine/collision.js", "tests/collision.test.js"]
-
-# ❌ errado — deixa a task sem cobertura
-["src/engine/collision.js"]
+["src/engine/collision.js", "tests/unit/collision.test.js"]
 ```
 
-O Validation Gate está embutido no loop do Passo 5 (Build → Lint → Tests). Este passo documenta os comandos por stack:
+Tasks de integração (nível 2) incluem testes de aceitação que cobrem os critérios Gherkin:
+```
+["src/integration/create_task.js", "tests/acceptance/create_task.test.js"]
+```
+
+**Ciclo TDD (tasks unitárias):**
+```
+1. Escrever teste que falha (RED)
+2. Implementar código mínimo para passar (GREEN)
+3. Refatorar se necessário (REFACTOR)
+4. Reportar no complete
+```
+
+**Testes de Aceitação (tasks de integração):**
+```
+1. Ler critérios Gherkin da história (dado/quando/então)
+2. Escrever teste caixa-preta que exercita o fluxo completo
+3. Mock APENAS recursos externos (DB, APIs externas, filesystem)
+4. Implementar a integração até o teste passar
+5. Reportar no complete
+```
+
+**A IA é responsável por executar os testes e reportar o resultado no `complete`:**
 
 ```bash
+# 1. IA executa os testes
+python -m pytest tests/test_schema.py -x -q
+
+# 2. IA anota: 3 passed, 0 failed
+
+# 3. IA chama complete com as claims
+python scripts/backlog.py {backlog} complete TASK-001 \
+  --test-files tests/test_schema.py \
+  --test-passed 3 --test-failed 0 \
+  --project-root {project_root}
+```
+
+Comandos de teste por stack:
+```bash
 # Python
-python -m py_compile {arquivo}
 python -m pytest {test_file} -x -q
 
 # JavaScript/TypeScript (Vitest)
 npx vitest run {test_file}
 
 # JavaScript/TypeScript (Jest)
-npx jest {pattern} --passWithNoTests=false
+npx jest {pattern}
 
-# Sem Node instalado (Vanilla browser)
-# Use a abordagem ESM inline — importe o módulo diretamente:
+# Vanilla browser (ESM)
 node --input-type=module <<< "import {fn} from './{arquivo}'; console.assert(fn(x) === y)"
 ```
 
-Se o test runner não está instalado quando a primeira task de lógica for executada: **instale na hora** (não adie para o /review descobrir).
+Se o test runner não está instalado: **instale na hora**.
+Se falhar: **corrija antes de completar. Nunca reporte `--test-failed > 0`.**
 
-Se falhar: **corrija antes de marcar como completed e antes de commitar.**
+### Passo 7 — Plan Completion
 
-### Passo 8 — Session Memory Snapshots
-
-```python
-from memory_manager import MemoryManager
-mm = MemoryManager(project_root=".")
-# A cada task completada:
-mm.save_snapshot(sm.load_state(), label=f"completed-{task.id}")
-```
-
-**Recuperação após crash:**
-```python
-recovery_prompt = mm.generate_handover_prompt()
-# Use este texto como contexto de recuperação de sessão
-```
-
-### Passo 9 — Plan Completion
-
-Quando `sm.is_plan_complete()` retornar `True`:
-```python
-sm.mark_plan_complete()
-progress_tracker.print_report(as_code_block=True)
-```
-
-Então:
+Quando `backlog.py complete` da última task imprimir "PLANO COMPLETO":
 ```bash
+python scripts/backlog.py {backlog} progress    # exibição final
 git push origin feature/{plan_name}
-# Notifique o usuário para criar a PR e executar /review
 ```
+
+Informe ao usuário:
+> Plano `{plan_name}` executado. Progress: 100%
+> Execute `/review` para validação final.
 
 ---
 
@@ -571,13 +346,15 @@ git push origin feature/{plan_name}
 
 ```
 .nexus/{plan_name}/
-├── plan_state.json      ← Estado completo (task por task)
-├── stories.json         ← Histórias geradas dos UCs (UC → Histórias)
-├── tasks.json           ← Tasks atômicas quebradas das histórias
-├── task_queue.json      ← Fila de tasks ordenada
-├── session_memory.json  ← Snapshots de recuperação
-├── execution_log.json   ← Log de cada transição de status
-└── spec.md              ← Plano original (não modificado)
+├── spec.json               ← Plano original (NÃO modificado pelo /dev)
+├── spec.md                 ← Visualização do plano
+├── decision_manifest.json  ← Decisões compactas
+├── visual.json             ← Decisões visuais (opcional, produzido pelo /proto)
+├── backlog.json            ← Fonte de verdade da execução (contexto = spec + visual merged)
+└── evidence/               ← Gerado automaticamente pelo complete
+    ├── TASK-001.json        ← Claims da IA + audit do script + resultado
+    ├── TASK-002.json
+    └── ...
 ```
 
 ---
@@ -585,29 +362,42 @@ git push origin feature/{plan_name}
 ## CRITÉRIOS DE SAÍDA DO `/dev`
 
 O `/dev` está COMPLETO quando:
-- [ ] `sm.is_plan_complete()` retorna `True`
-- [ ] Todas as tasks têm status `completed` ou `skipped`
+- [ ] `backlog.py progress` mostra 100%
+- [ ] Todas as tasks têm status `completed`
 - [ ] Build passa sem erros
-- [ ] Testes unitários passam
+- [ ] Testes passam
 - [ ] Nenhum arquivo contém mocks ou TODOs
-- [ ] Todos os commits seguem Conventional Commits puro: `type(scope): desc` — sem prefixo `[Task-XXX]`
+- [ ] Commits seguem Conventional Commits: `type(scope): desc`
 - [ ] Feature branch pushed
-
-**Após verificação, informe ao usuário:**
-> ✅ Plano `{plan_name}` executado. Progress: 100%  
-> Execute `/review` para validação final e emissão do certificado.
 
 ---
 
 ## RECOVERY PROTOCOL
 
-Se a sessão for interrompida, ao reiniciar execute:
-
-```python
-mm = MemoryManager(project_root=".")
-recovery_prompt = mm.generate_handover_prompt()
-print(recovery_prompt)
-# O contexto acima contém: completed_tasks, pending_tasks, next_task
-# Retome a partir de next_task SEM repetir completed_tasks
+Se a sessão for interrompida, ao reiniciar:
+```bash
+python scripts/backlog.py {backlog} recovery
 ```
 
+O output contém:
+- Tasks completas (não re-executar)
+- Tasks pendentes (executar em ordem)
+- Próxima task com contexto
+- Instrução de retomada
+
+Retome a partir da próxima task pendente SEM repetir tasks completas.
+
+---
+
+## CONTEXT QUERIES (para quando a IA precisar de informação específica)
+
+```bash
+# Contexto completo de uma task específica
+python scripts/backlog.py {backlog} context --task TASK-005
+
+# Contexto de uma história com todas as suas tasks
+python scripts/backlog.py {backlog} context --story US-UC01-FP
+
+# Resumo geral do backlog
+python scripts/backlog.py {backlog} show
+```

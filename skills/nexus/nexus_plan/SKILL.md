@@ -1,9 +1,19 @@
 ---
 name: Nexus /plan
-description: Stage 1 do Framework Nexus. Elimina ambiguidade através de Context Engineering, Complexity Assessment 5D, Discovery Gates interativos e geração de plano em EARS notation. ZERO código funcional é escrito nesta fase.
+description: Stage 1 do Framework Nexus. Elimina ambiguidade através de Context Engineering, Discovery Gates interativos e geração de plano em EARS notation. ZERO código funcional é escrito nesta fase.
 ---
 
 ACTIVATION-NOTICE: Este arquivo define as regras estritas para geração de planos Nexus. Leia integralmente antes de qualquer ação.
+
+## 🚦 GATE DE DEPENDÊNCIA
+
+**`/plan` é o ponto de entrada do pipeline Nexus. Não possui dependências.**
+
+```
+Pipeline: /plan → /proto (opcional) → /dev → /review
+```
+
+O `/plan` produz `spec.json` que é consumido por TODAS as fases posteriores. Nenhuma outra fase pode começar sem que `/plan` tenha sido concluído.
 
 ```yaml
 activation_instructions:
@@ -11,7 +21,7 @@ activation_instructions:
   - STEP 2: Internalizar o constitutional_gate e os autonomy_boundaries abaixo.
   - STEP 3: Executar o FLUXO OBRIGATÓRIO em ordem, respeitando cada HALT e validation block.
   - LANGUAGE RULE: Todas as perguntas de discovery e o spec.md gerado DEVEM estar em PT-BR.
-  - OUTPUT RULE: O spec.md DEVE ser salvo em `.nexus/{plan_name}/spec.md` via tool call.
+  - OUTPUT RULE: Use `scripts/spec_builder.py` via terminal para construir o spec.json incrementalmente. Ao final, execute `render` para gerar spec.md e decision_manifest.json.
 ```
 
 # 🎯 NEXUS `/plan` — ENHANCED PROMPT ENGINEERING
@@ -37,7 +47,6 @@ constitutional_gate:
     - 'ZERO linhas de código funcional durante /plan — apenas especificação.'
     - 'NUNCA inclua requisito vago sem métrica: substituir "rápido/robusto/fácil" por medidas concretas.'
     - 'O Dicionário de Entidades DEVE ter ao menos uma entrada antes de gerar o spec.md.'
-    - 'SE tier == STANDARD ou COMPLEX: `set_component_diagram()` é OBRIGATÓRIO. SE tier == SIMPLE: omitir.'
   on_violation:
     action: BLOCK
     message: |
@@ -78,35 +87,11 @@ Estruture o pedido do usuário no formato XML antes de qualquer análise:
 </prompt>
 ```
 
-### Passo 2 — Complexity Assessment (AIOS 5-Dimensions)
-
-Execute `scripts/prompt_expander.py` mentalmente ou via:
-```bash
-python scripts/prompt_expander.py "<prompt do usuário>"
-```
-
-**Exiba o assessment ao usuário antes de prosseguir:**
-
-| Dimensão | Score (1-5) | Guia |
-|----------|-------------|------|
-| **Scope** | ? | 1=1-5 arquivos, 3=6-15, 5=16+ |
-| **Integration** | ? | 1=Zero APIs, 3=1-2, 5=3+ |
-| **Infrastructure** | ? | 1=Sem mudanças, 3=1 serviço, 5=2+ novos |
-| **Knowledge** | ? | 1=Bem-conhecido, 3=Alguma pesquisa, 5=Desconhecido |
-| **Risk** | ? | 1=Sem impacto crítico, 3=Moderado, 5=Crítico |
-
-**Total:** Soma → `≤8 SIMPLE` | `9-15 STANDARD` | `≥16 COMPLEX`
-
-**Estimativas baseadas no tier:**
-- SIMPLE: /plan 30-60min | /dev 2-4h | /review 30min
-- STANDARD: /plan 2-4h | /dev 1-2 dias | /review 1-2h
-- COMPLEX: /plan 1-2 dias | /dev 3-5 dias | /review 2-4h
-
-### Passo 3 — Interactive Discovery Gates (Spec Kitty)
+### Passo 2 — Interactive Discovery Gates (Spec Kitty)
 
 **MUDE SEU ESTADO PARA: `WAITING_FOR_DISCOVERY_INPUT`**
 
-Apresente o formulário de descoberta COMPLETO antes de prosseguir. Use o `prompt_expander.py` para gerar perguntas contextuais.
+Apresente o formulário de descoberta COMPLETO antes de prosseguir.
 
 **Formato obrigatório por pergunta:**
 ```
@@ -143,33 +128,13 @@ Exemplos:
 - Toda operação que altera dados sensíveis gera entrada de auditoria.
 ```
 
-**Mapa de Componentes (C4) — OBRIGATÓRIO para STANDARD e COMPLEX:**  
-> **REGRA:** Se tier calculado no Passo 2 for `STANDARD` ou `COMPLEX`, você DEVE produzir o diagrama C4 antes de prosseguir para o Passo 4. Se for `SIMPLE`, pule.
-```
-flowchart TD
-  subgraph UI ["Camada: Presentation"]
-    A["React App / API Client"]
-  end
-  subgraph App ["Camada: Application"]
-    B["UseCaseHandlers"]
-  end
-  subgraph Core ["Camada: Domain"]
-    C["Entities + Repos (interfaces)"]
-  end
-  subgraph Infra ["Camada: Infrastructure"]
-    D["DB / External APIs"]
-  end
-  A --> B --> C
-  C --> D
-```
-
-**HALT OBRIGATÓRIO:** Não prossiga para Passo 4 até o usuário responder todas as perguntas.
+**HALT OBRIGATÓRIO:** Não prossiga para Passo 3 até o usuário responder todas as perguntas.
 
 ```yaml
 validation:
   - check: 'Todas as categorias obrigatórias foram cobertas (Funcional | Usuários | Auth | Persistência | NFRs | Segurança | Deploy | Testes).'
     onFailure: halt
-    message: 'Formulário de discovery incompleto. Não prossiga para Passo 4 sem cobertura total.'
+    message: 'Formulário de discovery incompleto. Não prossiga para Passo 3 sem cobertura total.'
     blocking: true
   - check: 'Ao menos uma entidade de domínio e um invariante foram identificados.'
     onFailure: warn
@@ -177,26 +142,19 @@ validation:
     blocking: false
 ```
 
-### Passo 4 — Option Resolution e Auto-Assumption
+### Passo 3 — Option Resolution e Auto-Assumption
 
-Para cada pergunta respondida, execute via `scripts/option_resolver.py`:
-```python
-resolver = OptionResolver(plan_name=plan_name)
-resolver.record_from_form(form)  # registra todas as decisões (explícitas + auto-assumed)
+Para cada pergunta respondida, registre a decisão via `spec_builder.py`:
+```bash
+python scripts/spec_builder.py .nexus/{plan_name}/spec.json decision --label "Persistência" --chosen "PostgreSQL (A)" --rationale "Banco relacional maduro para o domínio."
 ```
 
-**Auto-Assumption:** Se o usuário submeter o formulário sem responder uma pergunta específica (campo em branco, letra "X", traço ou "-") → assume a recomendação e loga imediatamente:
+**Auto-Assumption:** Se o usuário submeter o formulário sem responder uma pergunta específica (campo em branco, letra "X", traço ou "-") → assume a recomendação e registre como decisão normalmente, informando:
 ```
 ⚠️ AUTO-ASSUMED: [Q3] Persistência: PostgreSQL (recomendado — sem resposta do usuário)
 ```
 
-> **Nota:** O `resolver` é passado diretamente ao `PlanGenerator.generate()` no Passo 6.
-> Ele produz 2 saídas automaticamente:
-> 1. **Markdown rico** no `spec.md` — tabela completa com pergunta, opções, escolha, rationale e risk.
-> 2. **`decision_manifest.json`** — formato compacto consumido por StoryGenerator e TaskBreaker
->    para propagar decisões em cada story/task, garantindo reforço de contexto para agentes LLM.
-
-### Passo 5 — EARS Notation Formatting (Awesome Copilot)
+### Passo 4 — EARS Notation Formatting (Awesome Copilot)
 
 Converta CADA requisito aprovado para EARS notation:
 
@@ -230,62 +188,81 @@ validation:
     blocking: true
 ```
 
-### Passo 6 — Plan Document Generation
+### Passo 5 — Plan Document Generation (via spec_builder.py)
 
-**ANTES de instanciar o gerador, determine o workspace root:**  
-Use o caminho absoluto da pasta aberta na IDE — disponível no seu contexto de execução como `workspaceFolder`. Nunca use `"."` literal. Se por algum motivo o `workspaceFolder` não estiver disponível no contexto, pergunte ao usuário: `"Em qual pasta devo salvar o plano?"`.
+**ANTES de iniciar, determine o workspace root:**  
+Use o caminho absoluto da pasta aberta na IDE (`workspaceFolder`). Nunca use `"."` literal. Se indisponível, pergunte: `"Em qual pasta devo salvar o plano?"`.
 
-Execute `scripts/plan_generator.py` para gerar o artefato final:
-```python
-# project_root = workspaceFolder do contexto da IDE (caminho absoluto)
-generator = PlanGenerator(plan_name=plan_name, project_root=project_root)
+**FERRAMENTA:** `scripts/spec_builder.py` — CLI que a IA chama via terminal para construir o `spec.json` incrementalmente. Cada subcomando adiciona dados à seção correspondente. Ao final, `render` gera `spec.md` + `decision_manifest.json`.
 
-# 1. Estrutura de Especificação Funcional (Padrão Estrito UML do /gera-doc-funcional)
-# REQUISITO: O Diagrama DEVE ser graph LR, nós tipo circular com emojis, conexões -.-o|extend/include|
-generator.add_use_case_diagram("graph LR...") 
-# REQUISITO: Tabela Markdown (Ator | Tipo | Responsabilidade)
-generator.add_actor_dictionary(...)
-# REQUISITO: Matriz com coluna ID (UC-XX) — identificador estável para referência downstream
-generator.add_use_case_matrix(...)
-# REQUISITO: Drill-down com ID, Fluxo Principal (UC-XX.FP) + Fluxos Alternativos (UC-XX.FAn)
-for uc in use_cases:
-    generator.add_uc_drilldown(UCDrilldown(
-        id=uc.id,                             # ex: "UC-01"
-        nome=uc.name,
-        fluxo_principal=uc.main_flow,         # passos do fluxo principal
-        fluxos_alternativos=[                 # lista de FluxoAlternativo
-            FluxoAlternativo(id=f"{uc.id}.FA{i}", descricao=fa.desc, passos=fa.steps)
-            for i, fa in enumerate(uc.alt_flows, 1)
-        ],
-        entidades=uc.entities,
-    ))
+> **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/spec_builder.py`.
 
-# 2. Estrutura Nexus Core (EARS, Entities, Invariants, C4)
-# Adicione todos os EARS requirements
-for req in ears_requirements:
-    generator.add_ears_requirement(req["notation"], req["category"])
-# Adicione entidades do domínio (coletadas no Passo 3)
-for entity in domain_entities:
-    generator.add_entity(entity["name"], entity["definition"], entity["type"])
-# Adicione invariantes do sistema (coletadas no Passo 3)
-for invariant in system_invariants:
-    generator.add_invariant(invariant)
-# Mapa de componentes C4 — OBRIGATÓRIO se tier == STANDARD ou COMPLEX; omitir se SIMPLE
-if assessment.tier in ("STANDARD", "COMPLEX"):
-    generator.set_component_diagram("""
-flowchart TD
-  subgraph UI ["Presentation"]
-    A["<componente>"]
-  end
-  ...
-""")
-# Adicione NFRs, constraints, edge cases
-generator.add_nfr("API response time < 500ms for 95th percentile")
-# Gere o arquivo
-plan_path = generator.generate(assessment, resolver, raw_prompt)
+**Inicialização:**
+```bash
+python scripts/spec_builder.py {project_root}/.nexus/{plan_name}/spec.json init --plan "{plan_name}" --title "{TITULO}" --overview "{visao geral}"
 ```
 
-**Arquivo gerado: `.nexus/{plan_name}/spec.md`**
+**Decisões (já registradas no Passo 3, mas podem ser adicionadas/atualizadas aqui):**
+```bash
+python scripts/spec_builder.py {spec} decision --label "Auth" --chosen "JWT (A)" --rationale "Stateless, escala horizontal."
+```
+
+**EARS Requirements:**
+```bash
+python scripts/spec_builder.py {spec} ear --id REQ-01 --type WHEN --notation "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms."
+```
+
+**Atores:**
+```bash
+python scripts/spec_builder.py {spec} actor --name "Comprador" --type "Humanos" --responsibility "Criar e cancelar pedidos."
+```
+
+**Casos de Uso (Matriz):**
+```bash
+python scripts/spec_builder.py {spec} uc --id UC-01 --name "Criar Pedido" --description "Submissao de novo pedido pelo comprador."
+```
+
+**Diagrama Mermaid de Casos de Uso:**
+```bash
+# Escreva o mermaid em arquivo temporário e passe via --file
+python scripts/spec_builder.py {spec} uc-diagram --file .temp/uc-diagram.mmd
+# OU inline com \n
+python scripts/spec_builder.py {spec} uc-diagram --mermaid "graph LR\n    User((Comprador))\n    ..."
+```
+
+**Drill-downs (1 por UC — OBRIGATÓRIO):**
+```bash
+python scripts/spec_builder.py {spec} drilldown --uc-id UC-01 --actor "Comprador" --preconditions "Usuario autenticado." --main-flow "Step 1" "Step 2" "Step 3" --postconditions "Pedido criado."
+# Fluxos alternativos (se existirem)
+python scripts/spec_builder.py {spec} alt-flow --uc-id UC-01 --id UC-01.FA1 --description "Validacao falha" --steps "Sistema exibe erros." "Usuario corrige campos."
+```
+
+**Entidades, Invariantes, NFRs:**
+```bash
+python scripts/spec_builder.py {spec} entity --name "Pedido" --type "Domain" --definition "Requisicao formal de compra."
+python scripts/spec_builder.py {spec} invariant --text "Pedido cancelado jamais transita para outro estado."
+python scripts/spec_builder.py {spec} nfr --label "Performance" --text "API response time < 500ms for 95th percentile."
+```
+
+**Verificação e Renderização:**
+```bash
+python scripts/spec_builder.py {spec} show       # resumo do estado atual
+python scripts/spec_builder.py {spec} validate   # valida completude
+python scripts/spec_builder.py {spec} render     # gera spec.md + decision_manifest.json
+```
+
+> **Nota:** `{spec}` é atalho para `{project_root}/.nexus/{plan_name}/spec.json`.  
+> Cada subcomando faz upsert (idempotente) — chamar duas vezes com o mesmo ID atualiza em vez de duplicar.
+
+**Seções do spec.md gerado (numeração fixa):**
+1. Visão Geral
+2. Decisões do Projeto
+3. Requisitos EARS
+4. Especificação Funcional (UML) — Diagrama, Atores, Matriz
+5. Drill-down de Casos de Uso
+6. Dicionário de Entidades
+7. Invariantes do Sistema
+8. NFRs
 
 ---
 
@@ -293,24 +270,25 @@ plan_path = generator.generate(assessment, resolver, raw_prompt)
 
 ```
 .nexus/{plan_name}/
-├── spec.md                  ← Plano completo com EARS + decisions inline (entrega principal)
-└── decision_manifest.json   ← Formato compacto para propagação em stories/tasks
+├── spec.json                ← Fonte de verdade estruturada (construída incrementalmente)
+├── spec.md                  ← Visualização renderizada do spec.json (gerada por `render`)
+└── decision_manifest.json   ← Formato compacto para propagação em stories/tasks (gerado por `render`)
 ```
 
 ---
 
 ## CRITÉRIOS DE SAÍDA DO `/plan`
 
-O `/plan` está COMPLETO quando:
-- [ ] `spec.md` contém a Seção de Casos de Uso completa (Diagrama, Dicionário, Matriz com IDs UC-XX, Drill-downs com Fluxo Principal UC-XX.FP + Fluxos Alternativos UC-XX.FAn) e Dicionário de Entidades
-- [ ] A contagem de Drill-downs no documento deve obrigatoriamente bater 1:1 com a contagem de UCs listados na Matriz da seção 5.3 (zero omissões).
-- [ ] `spec.md` contém pelo menos 5 EARS requirements
+O `/plan` está COMPLETO quando `spec_builder.py validate` passa sem erros:
+- [ ] `spec.json` contém pelo menos 5 EARS requirements
+- [ ] `spec.json` contém pelo menos 1 entidade no Dicionário
+- [ ] `spec.json` contém pelo menos 1 decisão de projeto
+- [ ] Drill-downs 1:1 com UCs na Matriz (zero omissões)
 - [ ] Todas as questões do Discovery Form foram respondidas (ou auto-assumidas)
-- [ ] `spec.md` contém a seção `📋 Decisions Log` com tabela completa (Question + Chosen + Rationale + Risk)
-- [ ] `decision_manifest.json` existe com todas as decisões em formato compacto
 - [ ] Zero requisitos vagos (sem "rápido", "fácil", "robusto" sem métrica)
+- [ ] `render` executado com sucesso → `spec.md` + `decision_manifest.json` gerados
 
-**Após verificação de todos os critérios, informe ao usuário:**
-> ✅ Plano gerado em `.nexus/{plan_name}/spec.md`  
+**Após `render` bem-sucedido, informe ao usuário:**
+> Plano gerado em `.nexus/{plan_name}/spec.md`  
 > Execute `/dev` para iniciar a implementação.
 

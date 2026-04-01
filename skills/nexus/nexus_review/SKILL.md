@@ -1,333 +1,283 @@
 ---
 name: Nexus /review
-description: 'Stage 3 do Framework Nexus. Homologação automatizada com evidências coletadas, scoring 5-dimensões, verificação de compliance EARS e emissão de certificado de conformidade. Produz veredicto: APPROVED / NEEDS_REVISION / BLOCKED.'
+description: 'Stage 3 do Framework Nexus. Última linha de defesa — executa testes regressivos, build, lint, code quality e EARS compliance. Corrige ativamente tudo que encontrar antes de reportar. Produz veredicto determinístico: APPROVED / NEEDS_REVISION.'
 ---
 
 # 🔬 NEXUS `/review` — EVIDENCE-BASED HOMOLOGATION
 
+## 🚦 GATE DE DEPENDÊNCIA (verificar ANTES de qualquer ação)
+
+```
+Pipeline: /plan → /proto (opcional) → /dev → /review
+                                              ^^^^^^ VOCÊ ESTÁ AQUI
+```
+
+**Dependências obrigatórias:**
+1. `/plan` concluído (`spec.json` existe)
+2. `/dev` concluído (`backlog.json` com histórias, tasks e execução 100%)
+
+Antes de executar qualquer comando do `reviewer.py`:
+1. Verifique se `.nexus/{plan_name}/backlog.json` existe
+2. Verifique se o backlog contém histórias e tasks (o `/dev` de fato populou o backlog)
+
+**Se `backlog.json` não existir:** HALT — informe ao usuário:
+> backlog.json não encontrado. Execute `/dev` primeiro.
+> Ordem correta: /plan → /dev → /review
+
+**Se `backlog.json` não contiver histórias ou tasks:** HALT — informe ao usuário:
+> O backlog está vazio. O `/dev` precisa gerar histórias e tasks antes de iniciar o review.
+
+**Se tasks estiverem pendentes:** HALT — informe ao usuário:
+> {N} task(s) pendente(s). Termine o `/dev` antes de executar `/review`.
+
+> O script `reviewer.py check-readiness` já aplica essas validações automaticamente.
+
+---
+
 ## OBJETIVO
-Verificar se o plano executado por `/dev` atende a **todos** os critérios de qualidade definidos na especificação. Produz um **Certificado de Conformidade** quando aprovado.
 
-**INPUT:** Feature Branch com código implementado  
-**OUTPUT:** `.nexus/{plan_name}/review.md` (se APPROVED)
+**O `/review` é a última linha de defesa do pipeline Nexus.** Não existe fase posterior que vá corrigir o que o `/review` encontrar — portanto, o `/review` não apenas verifica: ele **executa, corrige e re-verifica** até que tudo esteja em conformidade total.
 
----
+A IA nesta fase é **executora ativa**: roda testes regressivos, executa build, verifica code quality (lint, warnings, smells), avalia compliance EARS, e **corrige tudo que falhar** antes de reportar ao script. Reportar falha ao script sem ter tentado corrigir é proibido.
 
-## PRÉ-CONDIÇÃO
+**Princípio:** Nunca reporte um gate como falho se você pode corrigir o problema. O script é apenas o registrador — VOCÊ é o corretor.
 
-1. Leia `.nexus/plan_state.json` e confirme `status == "completed"`
-2. Leia `.nexus/{plan_name}/spec.md` para carregar os requisitos EARS
-3. Se o estado não for `completed`: informe o usuário para completar `/dev` primeiro. **HALT.**
+**INPUT:** `backlog.json` com 100% das tasks completed + evidence files
+**OUTPUT:** `review.json` (estado do review) + `review.md` (certificado, se APPROVED)
 
 ---
 
-## FLUXO OBRIGATÓRIO (5 Passos)
+## FERRAMENTA CENTRAL: `scripts/reviewer.py`
 
-### Passo 1 — Coleta de Evidências (Build + Tests)
+> **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/reviewer.py`.
 
-```python
-from nexus_review import TestExecutor
-executor = TestExecutor(project_root=".")
-evidence = executor.collect_evidence(
-    plan_name="{plan_name}"
-)
-executor.save_evidence(".temp/review_test_evidence.json")
+A IA **NUNCA** escreve review.json diretamente. Toda leitura e escrita passa por `reviewer.py`:
+
+```
+CHECK:     check-readiness
+REPORT:    report-regression, report-build, report-compliance
+CERTIFY:   certify
+DISPLAY:   show
 ```
 
-**O que é coletado:**
-- Build resultado (sucesso/falha + output)
-- Tests: total, passed, failed, skipped
-- Coverage: percentual, linhas cobertas
-- Stack traces de falhas
+> `{review}` é atalho para `{project_root}/.nexus/{plan_name}/review.json` nos exemplos a seguir.
 
-**Gate de bloqueio:**
-- Build falhou → veredicto imediato `BLOCKED`
-- Tests falharam → veredicto imediato `BLOCKED`
-- Coverage < 80% → sinaliza como `NEEDS_REVISION`
+---
 
-### Passo 2 — Verificação de Compliance EARS
+## PRÉ-CONDIÇÃO OBRIGATÓRIA
 
-```python
-from nexus_review import ComplianceChecker
-checker = ComplianceChecker(
-    plan_path=".nexus/{plan_name}/spec.md",
-    project_root=".",
-)
-report = checker.check()
-print(report.to_markdown())
+Antes de iniciar:
+1. Verifique que `backlog.json` existe e está 100% completo
+2. Execute check-readiness:
+```bash
+python scripts/reviewer.py {review} check-readiness --backlog {backlog}
 ```
+Se tasks estiverem pendentes: **HALT** — informe ao usuário para completar `/dev` primeiro.
 
-**Critério de aprovação:** Compliance ≥ 90%
+---
 
-Para cada requisito EARS (`WHEN/WHILE/IF/WHERE ... THE SYSTEM SHALL ...`):
-- Busca evidência de implementação nos arquivos Python/TS
-- Busca evidência de teste cobrindo o comportamento
-- Classifica: ✅ COMPLIANT / ⚠️ PARTIAL / ❌ MISSING
+## FLUXO OBRIGATÓRIO
 
-Se compliance < 90%: lista requisitos não atendidos e adiciona como issues técnicas.
-
-### Passo 3 — Scoring 5 Dimensões
-
-```python
-from nexus_review import QualityGates, HomologationEvidence
-gates = QualityGates()
-gates.auto_score_from_evidence(HomologationEvidence(
-    build_passed=evidence.build_passed,
-    test_passed=evidence.test_passed,
-    coverage_pct=evidence.coverage_pct,
-    compliance_pct=report.compliance_pct,
-    tasks_completed_pct=sm.completion_percentage(),
-    has_mock_code=evidence.has_mock_code,
-    has_todos=evidence.has_todos,
-))
-print(gates.to_markdown())
-```
-
-**Dimensões e pesos:**
-
-| Dimensão       | Peso | Critério de Aprovação                          |
-|----------------|------|------------------------------------------------|
-| Accuracy       | 25%  | Implementação = Especificação EARS             |
-| Completeness   | 25%  | Todas as tasks completadas, sem TODOs          |
-| Consistency    | 20%  | Padrões, naming, arquitectura consistentes     |
-| Feasibility    | 15%  | Build passa, sem tech-debt bloqueante          |
-| Alignment      | 15%  | Objetivos de negócio atendidos                 |
-
-**Escola de pontuação (1-5):**
-```
-5 — Excelente: supera expectativas
-4 — Bom: atende completamente
-3 — Adequado: atende minimamente
-2 — Insuficiente: atende parcialmente  ← NEEDS_REVISION
-1 — Não atende                         ← BLOCKED se qualquer dimensão ≤ 1
-```
-
-**Algoritmo de Veredicto:**
-```
-BLOCKED      → SE qualquer dimensão ≤ 2
-NEEDS_REVISION → SE score_ponderado < 4.0 OU qualquer dimensão < 3
-APPROVED     → SE score_ponderado ≥ 4.0 E todas dimensões ≥ 3
-```
-
-### Passo 4 — Registro de Dívida Técnica
-
-Para cada issue identificada (mocks, coverage gaps, requisitos não atendidos):
-
-```markdown
-## Issues Técnicas
-
-| ID    | Dimensão     | Severidade | Descrição                            |
-|-------|--------------|------------|--------------------------------------|
-| TD-01 | Completeness | HIGH       | Requisito FR-03 sem cobertura de teste |
-| TD-02 | Accuracy     | MEDIUM     | Coverage 74% (mínimo: 80%)           |
-```
-
-Se veredicto ≠ APPROVED: registre issues em `.nexus/technical_debt.json` e aja conforme abaixo.
-
-**NEEDS_REVISION — limite máximo de 3 iterações:**
-> Corrija as issues listadas e re-execute `/review`. Não pergunte ao usuário — liste os arquivos a corrigir e execute `/dev` nas issues bloqueantes.
-> **HARD STOP após 3 iterações sem resolução:** Se após 3 ciclos correção→review o veredicto ainda for NEEDS_REVISION, registre as issues como `accepted_risk` em `.nexus/technical_debt.json` com justificativa do impedimento estrutural e emita o certificado com score atual + aviso explícito de dívida técnica. Proibido loop infinito.
-
-**BLOCKED — protocolo obrigatório:**
-
-1. Identifique a categoria da causa raiz:
-   - `INFRA_MISSING` — test runner / build tool ausente no projeto
-   - `COVERAGE_ZERO` — código existe mas zero testes escritos
-   - `BUILD_FAIL` — build quebrado, impede execução
-   - `ARCH_MISMATCH` — arquitetura incompatível com o critério (ex: Vanilla browser sem Node)
-
-2. Para cada categoria, aja diretamente **sem perguntar ao usuário**:
-
-   | Causa | Ação determinística |
-   |-------|---------------------|
-   | `INFRA_MISSING` | Instale o test runner adequado ao stack (sem npm, use CDN ESM; com Node, use `npm init` + Vitest) e crie os testes mínimos bloqueantes |
-   | `COVERAGE_ZERO` | Execute `/dev` nas issues TD bloqueantes para criar os arquivos `.test.*` necessários |
-   | `BUILD_FAIL` | Corrija o build antes de qualquer outra etapa — re-execute `/review` apenas após build PASS |
-   | `ARCH_MISMATCH` | Documente o mismatch como `accepted_risk` em `.nexus/technical_debt.json`, ajuste o critério de Feasibility para o stack real e re-score |
-
-3. Após resolver, re-execute `/review` automaticamente — **não transfira a decisão para o usuário**.
-
-**Tom obrigatório:** técnico e direto. Proibido: elogios ao trabalho anterior, linguagem sycophantic, apresentar "opções" ao usuário como se fosse uma escolha pessoal dele. O agente decide o caminho técnico correto e executa.
-
-Se veredicto = APPROVED com warnings: registre como dívida técnica não-bloqueante e emita.
-
-### Passo 5 — Emissão do Certificado
-
-**Somente se veredicto = APPROVED:**
-
-```python
-from nexus_review import CertificationEngine
-engine = CertificationEngine(project_root=".")
-certificate = engine.certify(
-    plan_name="{plan_name}",
-    quality_verdict="APPROVED",
-    quality_score=gates.weighted_score,
-    evidence=evidence,
-    compliance_report=report,
-)
-```
-
-**O certificado inclui:**
-- Score ponderado final
-- Evidências de build e testes
-- Compliance percentual
-- Data e hora de emissão (UTC)
-- Path: `.nexus/{plan_name}/review.md`
-
-**Regra de Exibição:** Ao imprimir o certificado final no chat, formatação nativa e natural. NÃO embrulhe sob nenhuma hipótese a saída do certificado inteiro em blocos de crase (\`\`\`markdown).
-
-### Passo 6 — Demonstração Interativa (somente se APPROVED)
-
-Após emitir o certificado, **pause e pergunte ao usuário** (único HALT obrigatório deste fluxo):
-
-> **Deseja executar a aplicação agora para um cenário de uso básico?**  
-> Responda `sim` ou `não`.
-
-Se a resposta for **não**: encerre informando que o certificado está em `.nexus/{plan_name}/review.md`.
-
-Se a resposta for **sim**, execute o protocolo abaixo:
-
-#### 6.1 — Detectar o comando de execução
-
-```python
-from nexus_core.build_system import BuildSystemDetector
-detector = BuildSystemDetector(project_root=".")
-run_cmd = detector.detect_run_command()
-# Exemplos de saída:
-#   Python CLI   → "python src/main.py"  ou  "python -m {module}"
-#   FastAPI/Flask → "uvicorn src.app:app --reload"
-#   Node/Vite    → "npm run dev"
-#   HTML estático → instrução para abrir index.html no browser
-```
-
-Se o detector não conseguir determinar, inspecione manualmente:
-- `package.json` → campo `scripts.start` ou `scripts.dev`
-- `pyproject.toml` / `setup.py` → entry points
-- Presença de `index.html` na raiz ou `dist/` → app web estática
-
-#### 6.2 — Executar a aplicação
+### Passo 1 — Check Readiness
 
 ```bash
-# Para processos que ocupam o terminal (server, dev server):
-# use run_in_terminal com isBackground=true
-
-# Para scripts CLI de curta duração:
-# use run_in_terminal com isBackground=false
+python scripts/reviewer.py {review} check-readiness --backlog {backlog}
 ```
 
-**Regras:**
-- Se for servidor web: aguarde 3s e faça um health-check (`curl http://localhost:{port}` ou equivalente) antes de informar ao usuário.
-- Se falhar na inicialização: exiba o stderr completo e registre como `TD-RUNTIME` em `.nexus/technical_debt.json`. Não reclassifique o certificado — o APPROVED é sobre o código; o runtime pode ter dependências de ambiente.
+O script verifica:
+- Todas as tasks estão `completed` no backlog
+- Todos os `evidence/{TASK-XXX}.json` existem
+- Extrai lista de EARS esperados do contexto do backlog
 
-#### 6.3 — Cenário de Uso Básico
+Se não estiver pronto: **HALT.** Sugira ao usuário completar o `/dev`.
 
-Após confirmação de que a app está rodando, produza um guia derivado do `spec.md` — use os requisitos EARS para inferir as funcionalidades principais. **Não invente rotas ou comandos que não foram implementados.**
+---
 
-⚠️ **FORMATAÇÃO OBRIGATÓRIA:** envolva em bloco ` ```text ` para preservar o layout no chat:
+### Passo 2 — Regression Testing (IA executa, corrige, re-executa)
 
-````text
-🚀 APLICAÇÃO RODANDO
+A IA roda **TODOS** os testes do projeto de forma regressiva (unitários + aceitação/Gherkin).
 
-   Endereço : http://localhost:{port}        (ou instrução de abertura)
-   Processo : {pid ou "background terminal"}
+**LOOP OBRIGATÓRIO — repita até 0 falhas:**
 
-📋 CENÁRIO DE USO BÁSICO — {plan_name}
+1. Execute o test runner completo da stack:
+```bash
+python -m pytest tests/ -v
+# OU
+npx vitest run
+# OU
+npx jest
+```
+2. Se **todos passaram**: reporte o resultado e avance.
+3. Se **algum falhou**: leia o traceback completo de cada falha, identifique a causa raiz, corrija o código, e volte ao passo 1. **NÃO reporte `--failed > 0` sem ter tentado corrigir.**
 
-   Passo 1 — {ação derivada do primeiro requisito EARS principal}
-             Como fazer: {instrução concreta — URL, comando, botão}
-             O que esperar: {comportamento esperado conforme o plano}
+```bash
+# Somente após 0 falhas confirmadas:
+python scripts/reviewer.py {review} report-regression --passed 25 --failed 0
+```
 
-   Passo 2 — {ação derivada do segundo requisito}
-             Como fazer: {instrução concreta}
-             O que esperar: {comportamento esperado}
+**Cuidado com regressão em cascata:** ao corrigir um bug, re-execute TODOS os testes novamente — a correção pode ter quebrado outra coisa.
 
-   ... (máximo 5 passos, cobrindo o fluxo principal do sistema)
+---
 
-💡 DICAS DE NAVEGAÇÃO
-   • {dica 1 relevante ao stack — ex: "hot reload ativo, edite e salve para ver mudanças"}
-   • {dica 2 — ex: "pressione Ctrl+C no terminal para encerrar"}
-   • {dica 3 — ex: "logs em tempo real no terminal de background"}
-````
+### Passo 3 — Build + Code Quality (IA executa, corrige, re-executa)
 
-Após exibir o guia, informe:
-> Certificado em `.nexus/{plan_name}/review.md`. A aplicação está ativa no terminal de background. Execute `/review` novamente a qualquer momento para re-homologar após mudanças.
+A IA roda build, lint e verificação de qualidade de código. O objetivo é **zero erros, zero warnings relevantes, zero code smells**.
+
+**LOOP OBRIGATÓRIO — repita até limpo:**
+
+1. **Build/Compile:**
+```bash
+# Python
+python -m compileall src/
+# JavaScript/TypeScript
+npx tsc --noEmit
+# OU
+npm run build
+```
+
+2. **Lint / Type-check / Warnings:**
+```bash
+# Python
+python -m py_compile src/**/*.py
+# Se disponível no projeto:
+# pylint, flake8, mypy, ruff, etc.
+
+# JavaScript/TypeScript
+# npx eslint src/
+# Se disponível no projeto
+```
+
+3. **Avaliação de code quality:**
+   - Verifique se há warnings de compilação, deprecation warnings, imports não utilizados
+   - Verifique se há code smells óbvios: funções muito longas, variáveis não usadas, dead code
+   - Use as ferramentas de lint que o projeto já tiver configuradas
+
+4. Se **erros ou warnings relevantes existirem**: corrija o código e volte ao passo 1.
+5. Se **limpo**: reporte o resultado.
+
+```bash
+# Somente após build limpo:
+python scripts/reviewer.py {review} report-build --passed --warnings 0
+# Se houver warnings não-críticos que não podem ser resolvidos:
+python scripts/reviewer.py {review} report-build --passed --warnings 3
+```
+
+**Critério:** Build deve PASSAR. Warnings devem ser minimizados — corrija todos que for possível. Reporte apenas os que genuinamente não podem ser resolvidos (ex: warning de dependência externa).
+
+---
+
+### Passo 4 — EARS Compliance (IA avalia, corrige, reporte)
+
+Para **cada** requisito EARS do spec, a IA inspeciona o código e testes para verificar cobertura completa.
+
+**PARA CADA EARS, siga este ciclo:**
+
+1. **Releia a notação EARS** no spec (ex: "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms")
+2. **Inspecione o código** — existe implementação que cobre esse comportamento?
+3. **Inspecione os testes** — existe teste que verifica esse comportamento?
+4. Se **implementação ou teste faltam**: implemente/teste o que faltar. Execute os testes para confirmar.
+5. **Somente quando compliant**: reporte.
+
+```bash
+python scripts/reviewer.py {review} report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42 + tests/test_task.py:15"
+```
+
+**Status possíveis:**
+
+| Status | Significado |
+|--------|------------|
+| `compliant` | Implementação + teste existem e cobrem o requisito |
+| `partial` | Implementação existe mas teste incompleto ou vice-versa |
+| `missing` | Sem implementação ou sem teste |
+
+**Regra:** Se ao inspecionar você encontrar um EARS `partial` ou `missing`, **corrija primeiro** (implemente, teste, confirme) e só então reporte como `compliant`. Reportar `partial` ou `missing` é admissão de que você não conseguiu resolver — faça isso apenas se genuinamente não for possível corrigir.
+
+**Após reportar todos os EARS:** re-execute os testes regressivos para garantir que as correções de compliance não quebraram nada. Se quebraram, volte ao Passo 2.
+
+---
+
+### Passo 5 — Certify (Script computa veredicto)
+
+```bash
+python scripts/reviewer.py {review} certify
+```
+
+O script computa o veredicto a partir de 5 gates determinísticos:
+
+| Gate | O que verifica | Fonte |
+|------|---------------|-------|
+| **TASKS** | Todas as tasks completed | `check-readiness` |
+| **EVIDENCE** | Todos evidence files existem | `check-readiness` |
+| **BUILD** | Build passou | `report-build` |
+| **REGRESSION** | 0 testes falhando, > 0 passando | `report-regression` |
+| **COMPLIANCE** | Todos EARS com status `compliant` | `report-compliance` |
+
+**Veredicto:**
+```
+APPROVED       → todos os 5 gates TRUE → gera review.md
+NEEDS_REVISION → qualquer gate FALSE → lista quais falharam
+```
+
+---
+
+### Passo 6 — Protocolo de Auto-Correção (quando `certify` retorna NEEDS_REVISION)
+
+**PRINCÍPIO:** NEEDS_REVISION é consequência direta de falhas no código ou nos reports que VOCÊ produziu. O script mostra o mapa de gates (PASS/FAIL) — corrija proativamente sem perguntar ao usuário.
+
+**Quando `certify` retornar NEEDS_REVISION, siga OBRIGATORIAMENTE:**
+
+1. **LEIA** o mapa completo de gates (PASS/FAIL) no output do `certify`
+2. **DIAGNOSTIQUE** cada gate FAIL (veja tabela abaixo)
+3. **CORRIJA** o código/testes e re-execute o report correspondente
+4. **CHAME `certify`** novamente
+
+| Gate | O que verificar | Como corrigir |
+|------|----------------|---------------|
+| **tasks_complete** | Tasks pendentes no backlog | Volte ao `/dev` e complete as tasks faltantes. `/review` não pode prosseguir sem 100%. |
+| **evidence_ok** | Arquivos `evidence/{TASK-XXX}.json` faltantes | Identifique quais tasks não têm evidence. Re-execute `backlog.py complete` para essas tasks. |
+| **build_passed** | Build/compilação falhou | Execute o build da stack. Leia os erros. Corrija o código. Re-execute e reporte via `report-build --passed`. |
+| **regression_passed** | Testes falhando na suíte completa | Execute o test runner completo. Leia cada traceback. Corrija os bugs — cuidado com regressão introduzida por correções anteriores. Re-execute e reporte via `report-regression`. |
+| **ears_compliant** | EARS sem implementação ou sem teste | Para cada EARS ID listado no FAIL: releia a notação EARS no spec, inspecione se existe implementação + teste correspondente, implemente/teste o que faltar, reporte via `report-compliance --status compliant`. |
+
+**Escalação progressiva:**
+- **Iteração 2:** Se os mesmos gates falharem, releia o spec.json original e compare com o código. A correção anterior pode ter introduzido novos problemas.
+- **Iteração 3 (HARD STOP):** Informe ao usuário com a lista exata do que não foi possível resolver e o que foi tentado. NÃO tente uma 4ª iteração.
+
+---
+
+### Passo 7 — Demonstração Interativa (somente se APPROVED)
+
+Após emitir o certificado, **pause e pergunte ao usuário:**
+
+> Deseja executar a aplicação para um cenário de uso básico? (sim/não)
+
+Se **não**: encerre informando o caminho do certificado.
+
+Se **sim**:
+1. Detecte o comando de execução da stack (package.json scripts, pyproject.toml, index.html)
+2. Execute a aplicação
+3. Produza um guia de uso derivado dos requisitos EARS (máximo 5 passos)
 
 ---
 
 ## ARTEFATOS PRODUZIDOS
 
 ```
-.nexus/
-├── homologation_evidence.json  ← Build + test evidence estruturada
-├── compliance_report.json      ← Requisitos EARS vs implementação
-├── quality_report.json         ← Scores 5D + veredicto
-└── technical_debt.json         ← Issues registradas
-
 .nexus/{plan_name}/
-└── review.md  ← Certificado final (se APPROVED)
+├── backlog.json    ← (existente, fonte de verdade do /dev)
+├── evidence/       ← (existente, gerado pelo /dev)
+├── review.json     ← Estado do review (gates, reports, veredicto)
+└── review.md       ← Certificado de conformidade (se APPROVED)
 ```
 
 ---
 
-## CRITÉRIOS DE APROVAÇÃO COMPLETOS
+## CRITÉRIOS DE APROVAÇÃO
 
-O `/review` emite certificado **APPROVED** quando:
-
-| Critério                  | Mínimo    |
-|---------------------------|-----------|
-| Build                     | PASS      |
-| Testes unitários          | PASS      |
-| Code coverage             | ≥ 80%     |
-| Compliance EARS           | ≥ 90%     |
-| Score ponderado (1-5)     | ≥ 4.0     |
-| Todas dimensões (1-5)     | ≥ 3       |
-| Arquivos com mock/TODO    | 0         |
-
----
-
-## EXEMPLO DE SAÍDA FINAL (APPROVED)
-
-# 🏆 CERTIFICADO NEXUS DE CONFORMIDADE
-
-| | |
-|---|---|
-| **Plano:** | {plan_name} |
-| **Veredicto:** | **APPROVED** |
-| **Score:** | 4.65 / 5.00 |
-| **Data/Hora (UTC):** | 2025-07-01T14:22:00Z |
-
-## 📊 Evidências de Homologação
-- **Build / Compile**: PASS
-- **Unit Tests**: X/X PASSED
-- **Test Coverage**: > 80%
-- **Mocks / TODOs**: 0
-- **EARS Compliance**: 100%
-
-## 📋 Qualidade Dimensional (5D)
-- **Accuracy (25%)**: 5/5
-- **Completeness (25%)**: 5/5
-- **Consistency (20%)**: 5/5
-- **Feasibility (15%)**: 4/5
-- **Alignment (15%)**: 5/5
-
-*Certificado gerado via validação assíncrona rigorosa baseada em rastreabilidade de código do Framework Nexus.*
-
----
-
-## EXEMPLO DE SAÍDA (NEEDS_REVISION)
-
-```
-🔴 VEREDICTO: NEEDS_REVISION
-Score: 3.40 / 5.00
-
-Dimensões abaixo do mínimo:
-  • Completeness: 2.5 ← abaixo de 3.0
-    Causa: 3 TODOs encontrados em src/services/user_service.py
-
-Issues para corrigir:
-  TD-01 [HIGH] src/services/user_service.py: TODO na linha 45
-  TD-02 [MEDIUM] Coverage: 74% (mínimo: 80%)
-
-Execute /review novamente após correções.
-```
-
+| Gate | Critério |
+|------|----------|
+| Tasks | 100% completed |
+| Evidence | Todos os evidence files existem |
+| Build | PASS |
+| Regression | 0 failed, > 0 passed |
+| EARS Compliance | 100% compliant |

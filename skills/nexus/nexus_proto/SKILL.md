@@ -1,265 +1,200 @@
 ---
 name: Nexus /proto
 description: >
-  Stage 1.5 do Framework Nexus. Roda após /plan e antes de /dev.
-  Gera wireframes SVG A/B para cada tela identificada no spec.md,
-  coleta decisões visuais do usuário e persiste em proto.json.
+  Stage 1.5 do Framework Nexus. Fase OPCIONAL entre /plan e /dev.
+  Explora layouts via wireframes A/B, coleta decisões visuais do usuário
+  e registra em visual.json via visual_builder.py.
   ZERO código funcional é escrito nesta fase.
 depends_on: /plan
 ---
 
-ACTIVATION-NOTICE: Este arquivo define as regras estritas para geração de wireframes Nexus /proto. Leia integralmente antes de qualquer ação.
+# 🖼️ NEXUS `/proto` — EXPLORAÇÃO VISUAL A/B
 
-```yaml
-activation_instructions:
-  - STEP 1: Ler este SKILL.md completo.
-  - STEP 2: Localizar e ler `.nexus/{plan_name}/spec.md` — obrigatório antes de qualquer wireframe.
-  - STEP 3: Executar o FLUXO OBRIGATÓRIO em ordem, respeitando cada HALT e estado de iteração.
-  - LANGUAGE RULE: Todo output ao usuário em PT-BR.
-  - OUTPUT RULE: Decisões salvas em `.nexus/{plan_name}/proto.json` via proto_generator.py.
-  - INVARIANTE: Nenhuma linha de código funcional durante /proto.
+## 🚦 GATE DE DEPENDÊNCIA (verificar ANTES de qualquer ação)
+
+```
+Pipeline: /plan → /proto (opcional) → /dev → /review
+                  ^^^^^^ VOCÊ ESTÁ AQUI
 ```
 
-# 🖼️ NEXUS `/proto` — WIREFRAME A/B INTERATIVO
+**Dependência obrigatória:** `/plan` concluído (`spec.json` com UCs registrados)
+
+Antes de executar qualquer comando do `visual_builder.py`:
+1. Verifique se `.nexus/{plan_name}/spec.json` existe
+2. Verifique se o spec tem ao menos 1 caso de uso registrado
+
+**Se `spec.json` não existir ou estiver vazio:** HALT — informe ao usuário:
+> spec.json não encontrado ou incompleto. Execute `/plan` primeiro.
+
+**Se `backlog.json` já existir no mesmo diretório:** WARN — o `/dev` já foi iniciado e o visual.json NÃO será incorporado automaticamente. Para incluir decisões visuais, o backlog precisa ser recriado.
+
+> O script `visual_builder.py init` já aplica essas validações automaticamente.
+
+---
 
 ## OBJETIVO
 
-Transformar as telas e componentes identificados no `spec.md` em wireframes SVG comparativos (A vs B),
-coletando a decisão visual do usuário para cada dimensão em disputa antes de iniciar `/dev`.
+Transformar as telas identificadas no spec.json em decisões de layout registradas em `visual.json`.
+A IA explora opções visuais (via SVG, canvas ou descrição), o usuário decide, e o script registra.
 
 **INVARIANTE:** O `/proto` não gera código funcional. Gera apenas especificação visual.
 
-```yaml
-constitutional_gate:
-  article: II
-  name: "Rigor Visual e Pureza de Fase"
-  severity: BLOCK
-  validation:
-    - 'Cada wireframe A/B DEVE isolar exatamente UMA dimensão em disputa. O restante é idêntico.'
-    - 'Todo SVG wireframe DEVE incluir anotações de intenção, não apenas descrição visual.'
-    - 'O arquivo proto.json DEVE registrar: screen_id, dimension, chosen_variant, change_requests[].'
-    - 'ZERO código funcional durante /proto — apenas SVG estático e especificação visual.'
-    - 'Cada screen DEVE ter ao menos um ciclo A/B completo antes de ser marcada como decided.'
-    - 'O /proto está COMPLETO somente quando todas as screens extraídas do spec.md forem decided.'
-  on_violation:
-    action: BLOCK
-    message: |
-      VIOLAÇÃO CONSTITUCIONAL: Wireframe incompleto ou decisão não registrada.
-      Não prossiga para /dev sem todas as screens com status decided.
+**FASE OPCIONAL:** Nem todo projeto precisa de `/proto`. Se o projeto não tem UI, ou se o layout é óbvio, pule direto para `/dev`. O `/dev` funciona normalmente sem `visual.json`.
 
-autonomy_boundaries:
-  may_invent:
-    - 'Dimensões em disputa inferíveis dos UCs (ex: posição de nav, densidade de lista, layout de form)'
-    - 'Variantes A/B para dimensões óbvias não especificadas no spec.md'
-    - 'Anotações de intenção baseadas em boas práticas de UX'
-  must_not_invent:
-    - 'Funcionalidades não presentes no spec.md'
-    - 'Entidades de domínio não listadas no Dicionário de Entidades do spec.md'
-    - 'Estados de UI sem EARS requirement de backing'
+---
+
+## FERRAMENTA CENTRAL: `scripts/visual_builder.py`
+
+> **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/visual_builder.py`.
+
+A IA **NUNCA** escreve visual.json diretamente. Toda leitura e escrita passa por `visual_builder.py`:
+
+```
+BUILD:     init, add-screen, decide, add-component
+DISPLAY:   show, validate
+```
+
+O `visual.json` registra **apenas decisões finais** — sem status, sem variantes A/B, sem SVGs. O SVG é ferramenta de comunicação entre IA e usuário, não artefato de execução.
+
+> `{visual}` é atalho para `{project_root}/.nexus/{plan_name}/visual.json` nos exemplos a seguir.
+
+---
+
+## PRÉ-CONDIÇÃO OBRIGATÓRIA
+
+Antes de iniciar:
+1. Verifique que `.nexus/{plan_name}/spec.json` existe (produzido por `/plan`)
+2. Crie o visual.json:
+```bash
+python scripts/visual_builder.py {visual} init --spec {project_root}/.nexus/{plan_name}/spec.json
 ```
 
 ---
 
 ## FLUXO OBRIGATÓRIO
 
-### Passo 1 — Leitura do spec.md
+### Passo 1 — Inventário de Screens
 
-Leia `.nexus/{plan_name}/spec.md` e extraia:
+Leia o spec.json (via contexto mental do `/plan`) e identifique telas:
+- Cada UC com interação visual → screen candidate
+- Entidades com CRUD → listagem + formulário
+- Estados especiais (empty state, loading, error) → screen variant
 
-```python
-screens = proto_generator.extract_screens(spec_path)
+Registre cada screen identificada:
+```bash
+python scripts/visual_builder.py {visual} add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03
+python scripts/visual_builder.py {visual} add-screen --id S02 --name "Formulario de Criacao" --uc-refs UC-01
 ```
 
-**O que extrair do spec.md:**
-- Cada UC com interação visual → 1 screen candidate
-- Entidades com CRUD → screen de listagem + screen de formulário
-- Fluxos com estados visuais distintos (ex: empty state, loading, error) → screen variants
-
-**Exiba o inventário ao usuário antes de prosseguir:**
-
-```
-📋 Screens identificadas para /proto:
-  [ ] S01 — Lista de Tarefas       (UC01, UC03)
-  [ ] S02 — Formulário de Criação  (UC01)
-  [ ] S03 — Estado Vazio           (WHILE lista vazia)
-  Total: 3 screens | 0 decided | 3 pending
+Exiba o inventário e confirme com o usuário:
+```bash
+python scripts/visual_builder.py {visual} show
 ```
 
 **HALT:** Confirme o inventário com o usuário. Adicione ou remova screens se solicitado.
 
 ---
 
-### Passo 2 — Geração de Wireframe A/B
+### Passo 2 — Exploração A/B (por screen)
 
-Para cada screen pendente, execute em sequência:
+Para cada screen, a IA:
 
-#### 2.1 — Identificar a Dimensão em Disputa
+1. **Identifica a dimensão em disputa** — o ponto onde existem 2+ abordagens válidas
+   ```
+   Screen: S01 — Lista de Tarefas
+   Dimensão: posição dos filtros (topo vs lateral)
+   ```
 
-Antes de gerar o SVG, declare explicitamente:
+2. **Gera wireframe A/B** — via SVG salvo em disco ou canvas interativo
+   - SVGs vão para `.nexus/{plan_name}/wireframes/{screen_id}_iter{N}.svg`
+   - Canvas pode ser usado como alternativa ao SVG
+   - A IA explica a intenção de cada variante ao apresentar
 
-```
-🎯 Screen: S01 — Lista de Tarefas
-   Dimensão em disputa: posição dos filtros (topo vs rodapé)
-   Impacto: determina se o contexto (filtro ativo) precede ou sucede a ação (adicionar)
-   Igual em A e B: input de criação, itens da lista, counter, estados completed/pending
-```
+3. **Coleta a decisão do usuário:**
+   ```
+   Responda com:
+     A        → escolher variante A
+     B        → escolher variante B
+     novo     → gerar novo par com outra dimensão
+     [texto]  → descrever mudança ("quero A mas com pills menores")
+   ```
 
-**Regras para escolher a dimensão:**
-- Priorize decisões que afetam hierarquia de informação ou fluxo primário
-- Uma dimensão por wireframe — sem misturar layout com densidade no mesmo par
-- Se não houver dimensão óbvia em disputa, use: `A = compact` vs `B = spacious`
-
-#### 2.2 — Gerar o SVG A/B
-
-Gere um único SVG seguindo o padrão abaixo:
-
-```
-ESTRUTURA DO SVG A/B:
-┌─────────────────────────────────────────────────────┐
-│  [label da decisão — 1 linha, centralizado no topo] │
-├───────────────────┬─────────────────────────────────┤
-│  [Badge A]        │  [Badge B]                      │
-│  [Card wireframe] │  [Card wireframe]               │
-│                   │                                 │
-│  • intenção A     │  • intenção B                   │
-│  [btn Escolher A] │  [btn Escolher B]               │
-├───────────────────┴─────────────────────────────────┤
-│  tudo igual exceto: [dimensão em disputa]           │
-└─────────────────────────────────────────────────────┘
-```
-
-**Regras obrigatórias do SVG:**
-- `viewBox="0 0 680 H"` — calcule H pelo conteúdo + 40px buffer
-- Tokens CSS obrigatórios: `var(--color-background-primary)`, `var(--color-background-secondary)`,
-  `var(--color-background-info)`, `var(--color-border-tertiary)`, `var(--color-border-secondary)`,
-  `var(--color-text-info)`, `var(--color-text-secondary)`, `var(--color-text-tertiary)`
-- Classes de texto: `class="t"` (14px), `class="ts"` (12px), `class="th"` (14px 500w)
-- `stroke-width="0.5"` para todas as bordas de cards
-- Anotações de intenção: texto 10-11px, `fill="var(--color-text-tertiary)"`, abaixo do wireframe
-- Separador central: linha vertical tracejada entre A e B
-- Rodapé da decisão: rect com `fill="var(--color-background-secondary)"` + texto da dimensão
-- Badge A: `fill="var(--color-background-info)"` + `fill="var(--color-text-info)"`
-- Badge B: `fill="var(--color-background-secondary)"` + borda `var(--color-border-secondary)`
-- Estados visuais explícitos: checkbox checked/unchecked, texto riscado, pills ativas/inativas
-- Botões "Escolher A/B": `fill="var(--color-background-secondary)"`,
-  borda `var(--color-border-secondary)`, texto `class="ts"`
-
-**O SVG NÃO deve conter:**
-- Gradientes, sombras, blur ou efeitos visuais ricos (wireframe é estrutural)
-- Texto em inglês (labels em PT-BR)
-- Dados reais de negócio — use placeholders coerentes com o domínio
-- Mais de 2 variantes por SVG
-
-#### 2.3 — Persistência Obrigatória do SVG em Disco
-
-> **REGRA:** O chat não consegue renderizar SVG inline. Todo wireframe gerado DEVE ser
-> salvo em arquivo imediatamente após a geração, antes de aguardar input do usuário.
-
-**Caminho obrigatório:**
-```
-.nexus/{plan_name}/{screen_id}_iter{N}.svg
-```
-- `{screen_id}` — ex: `S01`
-- `{N}` — número da iteração atual (começa em 1 e incrementa a cada `novo` ou change request)
-
-**Exemplo:** `.nexus/todo-app/S01_iter1.svg`
-
-Após salvar, exiba **obrigatoriamente** a mensagem:
-```
-📂 SVG salvo em: .nexus/{plan_name}/{screen_id}_iter{N}.svg
-   Abra o arquivo no VS Code ou em qualquer browser para visualizar o wireframe.
-```
-
-Use a tool `create_file` (ou `replace_file_content` se já existir) para escrever o arquivo.
-Nunca aguarde a decisão do usuário sem antes ter persistido o SVG em disco.
-
----
-
-### Passo 3 — Coleta de Decisão (Loop Interativo)
-
-**MUDE SEU ESTADO PARA: `WAITING_FOR_PROTO_INPUT`**
-
-Após exibir o SVG, apresente as opções:
-
-```
-Responda com:
-  A        → escolher variante A
-  B        → escolher variante B
-  novo     → gerar novo par A/B com outra dimensão em disputa
-  [texto]  → descrever mudança específica ("quero A mas com os filtros como pills menores")
-```
-
-**Tratamento de cada resposta:**
-
-| Input | Ação |
-|-------|------|
-| `A` ou `B` | Registra decisão → avança para próxima screen |
-| `novo` | Gera novo par A/B com dimensão diferente para a mesma screen |
-| texto livre | Aplica mudança na variante mais próxima → exibe wireframe atualizado → volta ao HALT |
-
-**Regra de change request:**
+**Regras da exploração:**
+- Uma dimensão por wireframe — sem misturar layout com densidade
 - Máximo 5 iterações por screen antes de forçar decisão
-- A cada iteração, registre o change_request no proto.json
-- Se o usuário pedir mudança que implique nova funcionalidade → `BLOCK` com mensagem:
-  ```
-  ⚠️ Esta mudança introduz funcionalidade não presente no spec.md.
-  Retorne ao /plan para atualizar o spec antes de continuar o /proto.
-  ```
+- Se mudança implica funcionalidade nova → BLOCK e voltar ao `/plan`
 
 ---
 
-### Passo 4 — Registro da Decisão
+### Passo 3 — Registro da Decisão
 
-Para cada screen decidida, execute:
+Quando o usuário decide, a IA registra via CLI:
 
-```python
-generator = ProtoGenerator(plan_name=plan_name, spec_path=spec_path)
-generator.record_decision(
-    screen_id="S01",
-    screen_name="Lista de Tarefas",
-    dimension="posição dos filtros",
-    variant_a_intent="filtros → contexto primeiro, input é ação secundária",
-    variant_b_intent="input → ação imediata, filtros são refinamento",
-    chosen="A",
-    change_requests=["quero pills menores", "remover contador do rodapé"],
-    svg_final=svg_string,
-)
-generator.save(f".nexus/{plan_name}/proto.json")
+```bash
+# Layout geral da tela
+python scripts/visual_builder.py {visual} decide --screen S01 \
+  --layout "Filtros no topo com pills 22px horizontais. Lista abaixo com checkbox e texto. Input de criacao inline no rodape."
+
+# Componentes com spec individual
+python scripts/visual_builder.py {visual} add-component --screen S01 \
+  --name FilterBar --spec "Pills 22px horizontais no topo. Cor ativa: primary. Max 4 filtros visiveis."
+
+python scripts/visual_builder.py {visual} add-component --screen S01 \
+  --name TaskList --spec "Checkbox + texto por item. Strikethrough quando completa. Scroll vertical."
+
+python scripts/visual_builder.py {visual} add-component --screen S01 \
+  --name CreateInput --spec "Input inline no rodape. Botao Criar a direita. Placeholder: Nova tarefa."
 ```
 
-**Exiba feedback imediato:**
-```
-✅ S01 decidida → Variante A (2 change requests aplicados)
-   Próxima: S02 — Formulário de Criação
-```
+**O que registrar em cada componente:**
+- Posição e dimensões relevantes
+- Comportamento visual (estados, interações)
+- Restrições de estilo mencionadas pelo usuário
+
+Repita Passos 2-3 para cada screen pendente.
 
 ---
 
-### Passo 5 — Geração do Sumário Visual
+### Passo 4 — Validação e Conclusão
 
-Quando todas as screens estiverem `decided`, gere `.nexus/{plan_name}/wireframes.md`:
+Quando todas as screens tiverem layout e componentes:
 
-```markdown
-# Wireframes: {plan_name}
-
-## Decisões Visuais
-
-| Screen | Dimensão | Escolha | Iterações |
-|--------|----------|---------|-----------|
-| S01 — Lista de Tarefas | posição dos filtros | A — filtros no topo | 3 |
-| S02 — Formulário | layout de campos | B — single column | 1 |
-
-## Anotações de Intenção por Screen
-
-### S01 — Lista de Tarefas
-**Variante escolhida:** A
-**Intenção:** filtros no topo estabelecem contexto antes da ação
-**Change requests aplicados:**
-- pills de filtro com altura reduzida (22px → 18px)
-- counter movido para inline com os filtros
-
-[SVG final embedado como referência]
+```bash
+python scripts/visual_builder.py {visual} validate --spec {spec.json}
+python scripts/visual_builder.py {visual} show
 ```
+
+O `validate --spec` verifica:
+- Todas as screens têm `layout_decision` e `components`
+- Todos os UCs do spec têm ao menos uma screen associada
+
+**Após validação, informe ao usuário:**
+> Proto completo — {N} screens, {M} componentes.
+> Execute `/dev` para iniciar a implementação.
+> O backlog detecta visual.json automaticamente ao lado do spec.json.
+
+---
+
+## COMO O `/dev` CONSOME O VISUAL
+
+O `/dev` **não lê** visual.json diretamente. O merge é automático no `backlog.py init`:
+
+```bash
+python backlog.py {backlog} init --spec {spec.json}
+```
+
+Se `visual.json` existir no mesmo diretório do spec.json, o backlog importa as screens automaticamente para `context.screens`, indexadas por UC. Quando a IA pede contexto de uma task (via `next` ou `context`), o layout aparece:
+
+```
+LAYOUT (telas do UC-01):
+  S01 — Lista de Tarefas:
+    Filtros no topo com pills 22px. Lista abaixo com checkbox e texto.
+    Componentes:
+      FilterBar: Pills 22px horizontais no topo. Cor ativa: primary.
+      TaskList: Checkbox + texto por item. Strikethrough quando completa.
+```
+
+Se o `/proto` não foi executado, o `/dev` funciona normalmente — a seção LAYOUT simplesmente não aparece no contexto.
 
 ---
 
@@ -267,30 +202,37 @@ Quando todas as screens estiverem `decided`, gere `.nexus/{plan_name}/wireframes
 
 ```
 .nexus/{plan_name}/
-├── spec.md           ← (existente, gerado pelo /plan)
-├── decision_manifest.json  ← (existente — decisões compactas para propagação)
-├── proto.json        ← decisões visuais + change request history  [NOVO]
-├── wireframes.md     ← sumário visual com SVGs finais             [NOVO]
-├── S01_iter1.svg     ← wireframe A/B salvo para visualização       [NOVO]
-├── S01_iter2.svg     ← iteração após change request                [NOVO]
-└── S02_iter1.svg     ← wireframe da próxima screen                 [NOVO]
+├── spec.json               ← (existente, gerado pelo /plan — NÃO modificado)
+├── visual.json             ← Decisões visuais finais (screens + componentes)
+└── wireframes/             ← SVGs de exploração (referência visual, descartáveis)
+    ├── S01_iter1.svg
+    ├── S01_iter2.svg
+    └── S02_iter1.svg
 ```
-
-> **Visualização:** Abra qualquer `.svg` na pasta `.nexus/{plan_name}/` no VS Code
-> (aba Preview) ou arraste para o browser. O chat não renderiza SVG inline.
 
 ---
 
 ## CRITÉRIOS DE SAÍDA DO `/proto`
 
-O `/proto` está COMPLETO quando:
-- [ ] Todas as screens do inventário têm status `decided`
-- [ ] `proto.json` existe com cada screen registrada (chosen, dimension, change_requests[])
-- [ ] `wireframes.md` existe com a tabela de decisões e anotações de intenção
-- [ ] Nenhuma decisão introduziu funcionalidade ausente no `spec.md`
-- [ ] Máximo de iterações por screen não foi ultrapassado (≤5)
+O `/proto` está COMPLETO quando `visual_builder.py validate` passa:
+- [ ] Todas as screens têm `layout_decision`
+- [ ] Todas as screens têm ao menos 1 componente
+- [ ] Todos os UCs do spec têm screen associada
+- [ ] Nenhuma decisão introduziu funcionalidade ausente no spec
 
-**Após verificação, informe ao usuário:**
-> ✅ Proto completo — {N} screens decididas, {M} change requests aplicados.
-> Execute `/dev` para iniciar a implementação.
-> O `/dev` deve referenciar `.nexus/{plan_name}/proto.json` para fidelidade visual.
+---
+
+## REGRAS DO SVG (quando usar wireframes SVG)
+
+Se a IA optar por gerar wireframes SVG para exploração:
+
+- `viewBox="0 0 680 H"` — calcule H pelo conteúdo + 40px buffer
+- Tokens CSS: `var(--color-background-primary)`, `var(--color-border-tertiary)`, etc.
+- Labels em PT-BR, dados placeholder coerentes com o domínio
+- Sem gradientes, sombras ou efeitos ricos — wireframe é estrutural
+- Salvar em: `.nexus/{plan_name}/wireframes/{screen_id}_iter{N}.svg`
+- Exibir mensagem após salvar:
+  ```
+  SVG salvo em: .nexus/{plan_name}/wireframes/S01_iter1.svg
+  Abra no VS Code ou browser para visualizar.
+  ```

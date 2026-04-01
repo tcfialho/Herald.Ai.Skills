@@ -124,30 +124,24 @@ tasks = breaker.break_tasks()
 breaker.save(f".nexus/{plan_name}/tasks.json")
 ```
 
-**(Opcional) Enriquecimento visual — apenas se `proto.json` existir:**
-```python
-import json
-from pathlib import Path
+**(Automático) Enriquecimento de referências cruzadas:**
 
-proto_path = Path(f".nexus/{plan_name}/proto.json")
-if proto_path.exists():
-    proto_data = json.loads(proto_path.read_text(encoding="utf-8"))
-    screens_by_uc = {
-        uc: screen
-        for screen in proto_data.get("screens", [])
-        if screen.get("status") == "decided"
-        for uc in screen.get("source_ucs", [])
-    }
-    for task in tasks:
-        matched = [
-            screens_by_uc[uc]
-            for uc in (task.ears_refs or [])
-            if uc in screens_by_uc
-        ]
-        if matched:
-            task.visual_spec = matched
-# SE proto.json não existe: task.visual_spec nunca é definido — sem impacto no fluxo.
+O `StoryGenerator` e o `TaskBreaker` carregam automaticamente `proto.json` e `decision_manifest.json` (se existirem no mesmo diretório do `spec.md`). Cada story e task recebe:
+- `decision_context[]` → decisões de planejamento do `/plan`
+- `proto_refs[]` → decisões visuais do `/proto` (seletivas por UC — apenas screens cujo `source_ucs` intersecta com o UC da story/task)
+
+**Após atribuir `historia_ref` nas tasks, propague `proto_refs` das stories-pai:**
+```python
+from task_breaker import TaskBreaker
+TaskBreaker.enrich_from_stories(
+    tasks=tasks,
+    stories_path=f".nexus/{plan_name}/stories.json",
+)
+# Re-salva tasks com proto_refs herdados das stories
+breaker.save(f".nexus/{plan_name}/tasks.json")
 ```
+
+> **Nota:** Se `proto.json` não existir, `proto_refs` fica `[]` — sem impacto no fluxo.
 
 **Estrutura obrigatória de uma Task:**
 ```yaml
@@ -168,10 +162,16 @@ pos_condicao:
 
 diretiva_de_teste: "Integração"   # Teste bate no banco real + teardown
 
+verify_cmd: "python -m pytest tests/integration/test_tarefas_schema.py -x -q"  # Comando de verificação para o SubmitGate
+
 files: ["src/migrations/001_create_tarefas.sql", "tests/integration/test_tarefas_schema.py"]
 dependencies: []                  # IDs de tasks que devem estar completas antes
 ears_refs: ["FR-01"]              # EARS requirements cobertos
 ```
+
+> ⚠️ **REGRA DO `verify_cmd`:** Todo task DEVE ter um `verify_cmd` preenchido no momento da criação pelo TaskBreaker.
+> O comando deve ser o **test runner real** da stack detectada (pytest, vitest, dotnet test, go test, cargo test, mvn test, etc.).
+> O agente é **PROIBIDO** de alterar o `verify_cmd` depois de definido. Ele é a âncora de verificação do SubmitGate.
 
 **Regras de Fatiamento por Camada Técnica (Granularidade):**
 
@@ -226,31 +226,23 @@ sm.register_tasks([{
 } for t in tasks])
 ```
 
-**OBRIGAÇÃO DE INÍCIO (HARD STOP):** No primeiro output da rotina `/dev`, você é OBRIGADO a imprimir o plano de execução completo no chat, contendo **absolutamente todas as tasks** e seu escopo, ANTES de iniciar a primeira task.
+**OBRIGAÇÃO DE INÍCIO (HARD STOP):** No primeiro output da rotina `/dev`, você é OBRIGADO a imprimir o plano de execução completo no chat com visão hierárquica **História → Task**, contendo **absolutamente todas as tasks**, organizadas por História, ANTES de iniciar a primeira task.
 ⚠️ **FORMATAÇÃO EXATA OBRIGATÓRIA:**
 
 ````text
-📋 PLANO DE EXECUÇÃO: {plan_name}
-   Total: {N} tasks | {M} histórias
+📋 PLANO DE EXECUÇÃO: {plan_name}  [ 0% ]
 
-   ⏳ [TASK-001] Criar schema da tabela Tarefa
-       História: US-UC01-FP | Tipo: Dados | Nível: 0
-       Objetivo: Criar migration com tabela tarefas
-       Arquivos: src/migrations/001_create_tarefas.sql
-       Pós-condição: Tabela existe no banco com todas as colunas
+📖 [US-UC01-FP] Fluxo principal: Criar tarefa
+  ⏳ ⚪ [TASK-001] Criar schema da tabela Tarefa [Dados]
+  ⏳ ⚪ [TASK-002] Implementar formulário de criação [UI]
+  ⏳ ⚪ [TASK-003] Criar endpoint POST /api/tarefas [API]
 
-   ⏳ [TASK-002] Implementar componente de formulário
-       História: US-UC01-FP | Tipo: UI | Nível: 0
-       Objetivo: Montar formulário HTML com campos título e prioridade
-       Arquivos: src/components/TaskForm.jsx
-       Pós-condição: Formulário renderiza com validação client-side
+📖 [US-UC01-FA1] Criar tarefa sem título
+  ⏳ ⚪ [TASK-004] Validação de campos obrigatórios [API]
 
-   ⏳ [TASK-003] Criar endpoint POST /api/tarefas
-       História: US-UC01-FP | Tipo: API | Nível: 1
-       Objetivo: Rota que recebe payload, valida e persiste
-       Arquivos: src/routes/tarefas.py, tests/integration/test_create_tarefa.py
-       Pós-condição: Retorna HTTP 201 com { id, titulo, status }
-   ...
+📖 [US-UC02-FP] Fluxo principal: Marcar concluída
+  ⏳ ⚪ [TASK-005] Endpoint PATCH /api/tarefas/:id [API]
+  ⏳ ⚪ [TASK-006] Integração UI → API de conclusão [Integração]
 ````
 
 ### Passo 4 — Priority Queue Ordering
@@ -293,21 +285,26 @@ ordered = pq.build_from_task_file(f".nexus/{plan_name}/tasks.json")
 └──────────────────────────────────────────────────┘
 ```
 
-**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP):** Em absolutamente todas as iterações onde uma task avançar ou for iniciada, você tem a OBRIGAÇÃO INEGOCIÁVEL de exibir a UI com o painel de transição no Chat.
-⚠️ **NUNCA OMITA E NÃO ABREVIE A LISTA.** A barra percentual e os ícones (✅/🔄/⏳) devem refletir a exatidão do momento atual da state machine. Use text block (` ```text `):
-⚠️ **REGRA DE OURO DO LAYOUT:** Todo o progresso exibido DEVE estar dentro de um **bloco de código Markdown** (` ```text `).
+**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP):** Em absolutamente todas as iterações onde uma task avançar ou for iniciada, você tem a OBRIGAÇÃO INEGOCIÁVEL de exibir a UI hierárquica com o painel de transição no Chat.
+⚠️ **NUNCA OMITA E NÃO ABREVIE A LISTA.** Os ícones (✅/🔄/⏳) e os indicadores de verificação (🟢/🔴/⚪) devem refletir a exatidão do momento atual da state machine. Use text block (` ```text `):
+⚠️ **REGRA DE OURO DO LAYOUT:** Modelos 100% concluídos devem ser resumidos em UMA linha (`✅ [História]`). Módulos `🔄` ou `⏳` precisam ser expandidos. Todo o progresso exibido DEVE estar dentro de um **bloco de código Markdown** (` ```text `).
 
 > ⚠️ **DISTINÇÃO CRÍTICA:** `tracker.print_report()` no loop Python é apenas referência lógica. A **emissão real** do painel é texto que você, o agente, escreve diretamente no chat — não o resultado de um comando no terminal. Atualizar o `plan_state.json` e exibir o painel são dois atos separados. O primeiro **não implica** o segundo. **Ambos são obrigatórios.**
 
 ````text
-📊 PROGRESSO: {plan_name} — {X}/{N} tasks ({'='*bar}{'.'*rest}) {pct}%
+📊 PROGRESSO: todo-app  [ 38% ]
 
-   ✅ [TASK-01] Estrutura base do projeto
-   ✅ [TASK-02] Modelo de dados User
-   🔄 [TASK-03] Serviço de autenticação JWT  ← EXECUTANDO AGORA
-   ⏳ [TASK-04] Middleware de autorização
-   ⏳ [TASK-05] Endpoints de login/logout
-   ⏳ [TASK-06] Testes de integração
+✅ [US-UC01-FP] Fluxo principal: Criar tarefa (2/2)
+
+📖 [US-UC01-FA1] Criar tarefa sem título
+  ✅ 🟢 [TASK-003] Mock do formulário vazio [UI]
+  🔄 🔴 [TASK-004] Validação de campos obrigatórios [API] ← EXECUTANDO (⚠️ 1x falha)
+  ⏳ ⚪ [TASK-005] Tratamento de erro UI [UI]
+
+📖 [US-UC02-FP] Fluxo principal: Marcar concluída
+  ⏳ ⚪ [TASK-006] Endpoint PATCH /api/tarefas/:id [API]
+  ⏳ ⚪ [TASK-007] Componente de checkbox [UI]
+  ⏳ ⚪ [TASK-008] Integração UI → API de conclusão [Integração]
 ````
 
 ```python
@@ -325,14 +322,15 @@ for task in ordered:
     sm.update_task_status(task.id, "in_progress", files=task.files)
 
     # === PASSO 0 — Proto Compliance Gate (OPCIONAL) ===
-    # Apenas se task.visual_spec foi definido acima (proto.json presente e UC com match).
+    # Apenas se task.proto_refs não estiver vazio (proto.json presente e UC com match).
     # SE existe:
-    #   Para cada screen em task.visual_spec, verifique que o componente respeita:
+    #   Para cada screen em task.proto_refs, verifique que o componente respeita:
     #     - screen["dimension"]        → a dimensão decidida (ex: filtros no topo)
     #     - screen["chosen"]           → variante escolhida (A ou B)
+    #     - screen["chosen_intent"]    → intenção da variante escolhida
     #     - screen["change_requests"]  → ajustes aplicados (ex: pills altura 18px)
     #   SE o código divergir: corrija antes de continuar.
-    # SE não existe: N/A — pule.
+    # SE vazio: N/A — pule.
 
     # === IMPLEMENTAR TASK AQUI ===
     # Siga os tópicos e subtópicos da task exatamente
@@ -440,15 +438,39 @@ for task in ordered:
     #   ✅ Deps:  todas as dependências externas resolvíveis no ambiente real
     #             (lista explícita ou "N/A — arquivo sem dependências externas")
     #
-    # Somente após confirmação acima → commitar.
+    # Somente após confirmação acima → submeter ao SubmitGate.
 
-    # Micro-commit atômico
+    # ══════════════════════════════════════════════════════
+    # SUBMIT GATE — Evidence Before Claims
+    # ══════════════════════════════════════════════════════
+    # O agente é PROIBIDO de chamar sm.update_task_status("completed") diretamente.
+    # A ÚNICA forma de marcar uma task como completed é através do SubmitGate.
+    # O SubmitGate lê o verify_cmd do tasks.json, varre os arquivos contra mocks,
+    # valida que testes referenciam implementações reais, e executa o verify_cmd.
+    # Somente se TODAS as fases passarem, o estado transiciona para completed.
+    #
+    # PROIBIDO: sm.update_task_status(task.id, "completed")  ← NUNCA FAÇA ISSO
+    # OBRIGATÓRIO:
+    from nexus_core.submit_gate import SubmitGate
+    gate = SubmitGate(project_root=".", plan_name="{plan_name}")
+    submit_result = gate.submit(task.id)
+    print(submit_result.summary())
+    #
+    # SE submit_result.is_accepted == False:
+    #   → NÃO commite. NÃO avance. Corrija o código e re-submeta.
+    #   → Se circuit breaker ativado (3 falhas): HALT IMEDIATO.
+    #     Transcreva o erro ao Usuário e peça consultoria humana.
+    #
+    # SE submit_result.is_accepted == True:
+    #   → O SubmitGate já alterou o plan_state.json internamente.
+    #   → Prossiga com o micro-commit:
+    #
+    # ══════════════════════════════════════════════════════
+
+    # Micro-commit atômico (somente se submit aceito)
     commit_msg = CommitMessageBuilder.build_from_task(task, commit_type="feat")
     # git add -A && git commit -m "{commit_msg}"
 
-    # Marcar como completed
-    sm.update_task_status(task.id, "completed", files=task.files)
-    
     # Snapshot de memória
     mm.save_snapshot(sm.load_state(), label=f"completed-{task.id}")
 
@@ -457,17 +479,19 @@ for task in ordered:
     tracker.print_report(as_code_block=True)  # estado atualizado
 ```
 
-### Passo 6 — Anti-Mock Enforcement (Em CADA arquivo gerado)
+### Passo 6 — Anti-Mock Enforcement (Embutido no SubmitGate)
 
-Após gerar cada arquivo, execute:
-```python
-from code_generator import CodeQualityChecker
-checker = CodeQualityChecker(project_root=".")
-result = checker.validate_file(filepath)
-if not result.is_valid:
-    # BLOQUEADO — corrija imediatamente antes de prosseguir
-    raise RuntimeError(f"Mock detectado em {filepath}:\n{result.errors}")
-```
+> ⚠️ **MUDANÇA ARQUITETURAL:** A verificação anti-mock agora é executada automaticamente
+> pelo `SubmitGate` durante a fase de submissão. O agente NÃO precisa chamá-la separadamente.
+> O SubmitGate varre TODOS os `task.files` buscando indicadores de mock/placeholder
+> (`# TODO`, `# FIXME`, `pass`, `raise NotImplementedError`, `return {}`, `mock_`, etc.)
+> **antes** de executar o `verify_cmd`. Se encontrar qualquer indicador, a submissão é rejeitada.
+>
+> Adicionalmente, o SubmitGate valida que arquivos de teste (`*.test.*`, `test_*`, `*Test.*`)
+> realmente importam/referenciam os arquivos de implementação da mesma task,
+> prevenindo testes "dummy" que passam mas não testam nada real.
+>
+> O agente continua PROIBIDO de usar os seguintes padrões em código gerado:
 
 **PROIBIDO absolutamente:**
 - `# TODO`, `# FIXME`

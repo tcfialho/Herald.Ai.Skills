@@ -9,6 +9,12 @@ Enforcement of the Atomic Task Rule:
   - Tasks that would touch more are automatically split
   - Each task must have a clear "done" criterion derived from its EARS req
 
+Decision Propagation:
+  If decision_manifest.json exists alongside spec.md, each task receives
+  a `decision_context` list of planning decisions. This ensures that the
+  LLM agent executing the task has access to key architectural decisions
+  even without reading the full spec.md.
+
 Usage:
     breaker = TaskBreaker(plan_path=".nexus/nexus_auth-system/spec.md")
     tasks = breaker.break_tasks()
@@ -40,6 +46,7 @@ def _find_nexus_core_root() -> Path:
 sys.path.insert(0, str(_find_nexus_core_root()))
 
 from nexus_core.file_utils import read_text, write_text, ensure_dir
+from nexus_core.proto_loader import load_proto_index
 from nexus_core.validation import validate_task_definition, ValidationResult
 
 MAX_FILES_PER_TASK = 3
@@ -69,6 +76,7 @@ class AtomicTask:
     pre_condicao: list[str] = field(default_factory=list)         # Structural deps (real code from prior tasks)
     pos_condicao: list[str] = field(default_factory=list)         # Exit contract (technical, verifiable, binary)
     diretiva_de_teste: str = ""                                   # Integração | Unitário | Componente | E2E
+    verify_cmd: str = ""                                          # Shell command to verify task completion (used by SubmitGate)
     files: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     ears_refs: list[str] = field(default_factory=list)
@@ -78,6 +86,8 @@ class AtomicTask:
     priority: str = "medium"
     acceptance_criteria: list[str] = field(default_factory=list)
     done_criteria: str = ""
+    decision_context: list[dict] = field(default_factory=list)  # Planning decisions (from /plan)
+    proto_refs: list[dict] = field(default_factory=list)         # Visual design decisions (from /proto)
 
     def validate(self) -> ValidationResult:
         return validate_task_definition(asdict(self))
@@ -105,9 +115,20 @@ class TaskBreaker:
         if not self.plan_path.exists():
             raise FileNotFoundError(f"Plan file not found: {self.plan_path}")
         content = read_text(self.plan_path)
+        self._decision_manifest = self._load_decision_manifest()
+        self._proto_index = load_proto_index(self.plan_path.parent)
         self._tasks = self._parse(content)
         self._parsed = True
         return self._tasks
+
+    def _load_decision_manifest(self) -> list[dict]:
+        """Load decision_manifest.json if it exists alongside spec.md."""
+        manifest_path = self.plan_path.parent / "decision_manifest.json"
+        if not manifest_path.exists():
+            return []
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("decisions", [])
 
     def _parse(self, content: str) -> list[AtomicTask]:
         tasks: list[AtomicTask] = []
@@ -203,6 +224,7 @@ class TaskBreaker:
                     ears_refs=list(ears_refs),
                     acceptance_criteria=list(acceptance_criteria),
                     done_criteria="All files compile, pass linter, and unit tests pass.",
+                    decision_context=list(self._decision_manifest),
                 )
             ]
 
@@ -222,6 +244,7 @@ class TaskBreaker:
                     ears_refs=list(ears_refs),
                     acceptance_criteria=list(acceptance_criteria),
                     done_criteria=f"Part {part} files compile and unit tests pass.",
+                    decision_context=list(self._decision_manifest),
                 )
             )
         return result
@@ -290,7 +313,36 @@ class TaskBreaker:
     def load_from_json(cls, path: "str | Path") -> list[AtomicTask]:
         with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
-        return [AtomicTask(**t) for t in raw]
+        loaded = []
+        for t in raw:
+            t.setdefault("decision_context", [])
+            t.setdefault("proto_refs", [])
+            loaded.append(AtomicTask(**t))
+        return loaded
+
+    @staticmethod
+    def enrich_from_stories(
+        tasks: list[AtomicTask], stories_path: "str | Path"
+    ) -> None:
+        """Post-hoc enrichment: propagate proto_refs from parent stories to tasks.
+
+        Call this after the agent sets historia_ref on each task.
+        Tasks whose historia_ref matches a story will inherit that story's proto_refs,
+        ensuring the full reference chain: UC → Story (with proto_refs) → Task.
+        """
+        stories_file = Path(stories_path)
+        if not stories_file.exists():
+            return
+        with open(stories_file, "r", encoding="utf-8") as fh:
+            raw_stories = json.load(fh)
+
+        story_index = {s["id"]: s for s in raw_stories}
+        for task in tasks:
+            if not task.historia_ref:
+                continue
+            parent_story = story_index.get(task.historia_ref)
+            if parent_story and not task.proto_refs:
+                task.proto_refs = parent_story.get("proto_refs", [])
 
     # ------------------------------------------------------------------
     # Reporting

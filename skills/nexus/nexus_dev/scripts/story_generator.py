@@ -9,6 +9,12 @@ Reference direction is always child → parent:
   - Story → UC  (historia.uc_ref points to the UC)
   - Task  → Story (task.historia_ref points to the Story)
 
+Decision Propagation:
+  If decision_manifest.json exists alongside spec.md, each story receives
+  a `decision_context` list containing all planning decisions. This ensures
+  that LLM agents executing stories have full decision visibility even when
+  the spec.md is too large for reliable context retention.
+
 Usage:
     generator = StoryGenerator(plan_path=".nexus/auth-system/spec.md")
     stories = generator.generate_stories()
@@ -39,6 +45,7 @@ def _find_nexus_core_root() -> Path:
 sys.path.insert(0, str(_find_nexus_core_root()))
 
 from nexus_core.file_utils import read_text
+from nexus_core.proto_loader import load_proto_index, normalize_uc_id
 
 
 # ------------------------------------------------------------------
@@ -60,6 +67,8 @@ class UserStory:
     fluxo_id: str              # Flow ID: "UC-01.FP", "UC-01.FA1"
     descricao_breve: str       # Brief description (visual only, UC is source of truth)
     criterios_aceitacao: list[GherkinCriterion] = field(default_factory=list)
+    decision_context: list[dict] = field(default_factory=list)  # Planning decisions (from /plan)
+    proto_refs: list[dict] = field(default_factory=list)         # Visual design decisions (from /proto)
     status: str = "pending"    # pending | in_progress | completed
 
 
@@ -111,9 +120,20 @@ class StoryGenerator:
         if not self.plan_path.exists():
             raise FileNotFoundError(f"Spec file not found: {self.plan_path}")
         content = read_text(self.plan_path)
+        self._decision_manifest = self._load_decision_manifest()
+        self._proto_screens_by_uc = load_proto_index(self.plan_path.parent)
         self._stories = self._parse_and_generate(content)
         self._generated = True
         return self._stories
+
+    def _load_decision_manifest(self) -> list[dict]:
+        """Load decision_manifest.json if it exists alongside spec.md."""
+        manifest_path = self.plan_path.parent / "decision_manifest.json"
+        if not manifest_path.exists():
+            return []
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("decisions", [])
 
     def _parse_and_generate(self, content: str) -> list[UserStory]:
         stories: list[UserStory] = []
@@ -149,12 +169,17 @@ class StoryGenerator:
         story_id = f"US-UC{uc_num}-FP"
         fluxo_id = f"{uc_id}.FP"
 
+        uc_normalized = normalize_uc_id(uc_id)
+        matching_protos = self._proto_screens_by_uc.get(uc_normalized, [])
+
         return UserStory(
             id=story_id,
             uc_ref=uc_id,
             fluxo_id=fluxo_id,
             descricao_breve=f"Fluxo principal: {uc_name}",
             criterios_aceitacao=[],  # Populated by the agent during generation
+            decision_context=list(self._decision_manifest),
+            proto_refs=matching_protos,
         )
 
     def _generate_alternative_stories(
@@ -170,12 +195,17 @@ class StoryGenerator:
             fluxo_id = f"{uc_id}.{fa_id}"
             alt_desc = match.group(2).strip() if match.group(2) else f"Fluxo alternativo {i}"
 
+            uc_normalized = normalize_uc_id(uc_id)
+            matching_protos = self._proto_screens_by_uc.get(uc_normalized, [])
+
             stories.append(UserStory(
                 id=story_id,
                 uc_ref=uc_id,
                 fluxo_id=fluxo_id,
                 descricao_breve=f"{alt_desc} ({uc_name})",
                 criterios_aceitacao=[],
+                decision_context=list(self._decision_manifest),
+                proto_refs=matching_protos,
             ))
 
         return stories
@@ -207,6 +237,8 @@ class StoryGenerator:
                 criterios_aceitacao=[
                     GherkinCriterion(**c) for c in s.get("criterios_aceitacao", [])
                 ],
+                decision_context=s.get("decision_context", []),
+                proto_refs=s.get("proto_refs", []),
                 status=s.get("status", "pending"),
             )
             for s in raw

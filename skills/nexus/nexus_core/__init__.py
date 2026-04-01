@@ -5,6 +5,7 @@ Provides:
 - StateManager: Persistent .nexus/plan_state.json management
 - FileUtils: Common file operations
 - Validation: EARS notation and plan/task structure validators
+- SubmitGate: Evidence-based task completion gate
 """
 
 from .state_manager import NexusStateManager
@@ -20,9 +21,12 @@ from .validation import (
     is_ears_notation,
     classify_complexity,
 )
+from .submit_gate import SubmitGate, SubmitResult
 
 __all__ = [
     "NexusStateManager",
+    "SubmitGate",
+    "SubmitResult",
     "ensure_dir",
     "read_text",
     "write_text",

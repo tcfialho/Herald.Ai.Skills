@@ -2,96 +2,19 @@
 Nexus Plan - Prompt Expander
 
 Takes a raw user prompt and produces a structured discovery form with:
-  1. Complexity assessment (5-dimension AIOS model)
-  2. Grouped discovery questions with A/B options
-  3. XML-formatted prompt suitable for the plan_generator
+  1. Grouped discovery questions with A/B options
+  2. XML-formatted prompt suitable for the spec_builder
 
 Usage:
     expander = PromptExpander()
-    assessment = expander.assess_complexity(user_prompt)
-    form = expander.build_discovery_form(user_prompt, assessment)
+    form = expander.build_discovery_form(user_prompt, plan_name)
     print(form.to_markdown())
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Optional
-
-# ------------------------------------------------------------------
-# Complexity assessment
-# ------------------------------------------------------------------
-
-DIMENSION_LABELS = {
-    "scope": "Scope (estimated files)",
-    "integration": "Integration (external APIs/services)",
-    "infrastructure": "Infrastructure (DBs, queues, cloud)",
-    "knowledge": "Knowledge (team familiarity)",
-    "risk": "Risk (business criticality)",
-}
-
-DIMENSION_GUIDE = {
-    "scope": {1: "1-5 files", 3: "6-15 files", 5: "16+ files"},
-    "integration": {1: "No APIs", 3: "1-2 APIs", 5: "3+ APIs"},
-    "infrastructure": {1: "No changes", 3: "1 service modified", 5: "2+ new services"},
-    "knowledge": {1: "Well-known domain", 3: "Some research needed", 5: "Unknown territory"},
-    "risk": {1: "No critical impact", 3: "Moderate impact", 5: "Mission-critical system"},
-}
-
-# Heuristic keyword → dimension boost
-_SCOPE_KEYWORDS = ["module", "service", "api", "interface", "integration", "full", "complete", "system"]
-_INTEGRATION_KEYWORDS = ["api", "webhook", "oauth", "payment", "gateway", "external", "third-party", "sso"]
-_INFRA_KEYWORDS = ["database", "db", "queue", "cache", "redis", "kafka", "storage", "cloud", "docker"]
-_KNOWLEDGE_KEYWORDS = ["machine learning", "ml", "blockchain", "cryptography", "realtime", "websocket"]
-_RISK_KEYWORDS = ["payment", "billing", "auth", "security", "gdpr", "compliance", "financial", "medical"]
-
-
-@dataclass
-class ComplexityAssessment:
-    scores: dict[str, int] = field(default_factory=dict)
-    rationale: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def total(self) -> int:
-        return sum(self.scores.values())
-
-    @property
-    def tier(self) -> str:
-        if self.total <= 8:
-            return "SIMPLE"
-        if self.total <= 15:
-            return "STANDARD"
-        return "COMPLEX"
-
-    @property
-    def estimated_plan_time(self) -> str:
-        return {"SIMPLE": "30-60 min", "STANDARD": "2-4 hours", "COMPLEX": "1-2 days"}[self.tier]
-
-    @property
-    def estimated_dev_time(self) -> str:
-        return {"SIMPLE": "2-4 hours", "STANDARD": "1-2 days", "COMPLEX": "3-5 days"}[self.tier]
-
-    @property
-    def estimated_hom_time(self) -> str:
-        return {"SIMPLE": "30 min", "STANDARD": "1-2 hours", "COMPLEX": "2-4 hours"}[self.tier]
-
-    def to_markdown(self) -> str:
-        lines = ["### 📊 Complexity Assessment\n"]
-        lines.append("| Dimension | Score | Guide |")
-        lines.append("|-----------|-------|-------|")
-        for dim, label in DIMENSION_LABELS.items():
-            score = self.scores.get(dim, "?")
-            guide = DIMENSION_GUIDE[dim].get(score, "")
-            reason = self.rationale.get(dim, "")
-            lines.append(f"| {label} | {score}/5 | {guide} — _{reason}_ |")
-        lines.append(f"\n**Total:** {self.total}/25 → **Tier: {self.tier}**")
-        lines.append(
-            f"\n⏱ Estimates: /plan {self.estimated_plan_time} | "
-            f"/dev {self.estimated_dev_time} | "
-            f"/review {self.estimated_hom_time}"
-        )
-        return "\n".join(lines)
 
 
 # ------------------------------------------------------------------
@@ -217,15 +140,13 @@ class DiscoveryQuestion:
 class DiscoveryForm:
     plan_name: str
     raw_prompt: str
-    assessment: ComplexityAssessment
     questions: list[DiscoveryQuestion] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         lines = [
             f"# 🔍 Discovery Form — {self.plan_name}\n",
             f"> Original prompt: _{self.raw_prompt}_\n",
-            self.assessment.to_markdown(),
-            "\n---\n",
+            "---\n",
             "## ❓ Discovery Questions\n",
             "*Please answer each question (A / B / custom):*\n",
         ]
@@ -263,58 +184,13 @@ class DiscoveryForm:
 class PromptExpander:
     """Transforms a raw user prompt into a structured discovery form."""
 
-    def assess_complexity(self, prompt: str) -> ComplexityAssessment:
-        """Heuristic complexity assessment based on keyword scanning."""
-        lower = prompt.lower()
-        assessment = ComplexityAssessment()
-
-        # Scope
-        scope_hits = sum(1 for kw in _SCOPE_KEYWORDS if kw in lower)
-        assessment.scores["scope"] = min(5, max(1, scope_hits))
-        assessment.rationale["scope"] = f"{scope_hits} scope keyword(s) detected"
-
-        # Integration
-        int_hits = sum(1 for kw in _INTEGRATION_KEYWORDS if kw in lower)
-        assessment.scores["integration"] = min(5, max(1, int_hits + 1))
-        assessment.rationale["integration"] = f"{int_hits} integration keyword(s) detected"
-
-        # Infrastructure
-        infra_hits = sum(1 for kw in _INFRA_KEYWORDS if kw in lower)
-        assessment.scores["infrastructure"] = min(5, max(1, infra_hits + 1))
-        assessment.rationale["infrastructure"] = f"{infra_hits} infrastructure keyword(s) detected"
-
-        # Knowledge
-        know_hits = sum(1 for kw in _KNOWLEDGE_KEYWORDS if kw in lower)
-        assessment.scores["knowledge"] = min(5, max(1, know_hits + 1))
-        assessment.rationale["knowledge"] = f"{know_hits} advanced domain keyword(s) detected"
-
-        # Risk
-        risk_hits = sum(1 for kw in _RISK_KEYWORDS if kw in lower)
-        assessment.scores["risk"] = min(5, max(1, risk_hits + 1))
-        assessment.rationale["risk"] = f"{risk_hits} risk keyword(s) detected"
-
-        return assessment
-
-    def build_discovery_form(
-        self, raw_prompt: str, plan_name: str, assessment: Optional[ComplexityAssessment] = None
-    ) -> DiscoveryForm:
-        """Build a DiscoveryForm with questions appropriate to the prompt's complexity."""
-        if assessment is None:
-            assessment = self.assess_complexity(raw_prompt)
-
-        questions_dicts = list(_BASE_QUESTIONS)
-
-        if assessment.scores.get("integration", 1) >= 3:
-            questions_dicts.extend(_INTEGRATION_QUESTIONS)
-
-        if assessment.scores.get("infrastructure", 1) >= 3:
-            questions_dicts.extend(_INFRA_QUESTIONS)
-
+    def build_discovery_form(self, raw_prompt: str, plan_name: str) -> DiscoveryForm:
+        """Build a DiscoveryForm with all discovery questions."""
+        questions_dicts = list(_BASE_QUESTIONS) + list(_INTEGRATION_QUESTIONS) + list(_INFRA_QUESTIONS)
         questions = [DiscoveryQuestion(**q) for q in questions_dicts]
         return DiscoveryForm(
             plan_name=plan_name,
             raw_prompt=raw_prompt,
-            assessment=assessment,
             questions=questions,
         )
 
@@ -322,15 +198,12 @@ class PromptExpander:
         self, raw_prompt: str, plan_name: str, tech_stack: str = "to be determined"
     ) -> str:
         """Produce a GSD-style XML-formatted prompt for the plan generator."""
-        assessment = self.assess_complexity(raw_prompt)
         return (
             f"<prompt>\n"
             f"  <role>nexus_spec_planner</role>\n"
             f"  <context>\n"
             f"    <project_name>{plan_name}</project_name>\n"
             f"    <tech_stack>{tech_stack}</tech_stack>\n"
-            f"    <complexity_tier>{assessment.tier}</complexity_tier>\n"
-            f"    <complexity_total>{assessment.total}</complexity_total>\n"
             f"  </context>\n"
             f"  <user_request>{raw_prompt}</user_request>\n"
             f"  <task>Generate a complete spec-driven plan following EARS notation.</task>\n"
@@ -354,8 +227,7 @@ if __name__ == "__main__":
     prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Build a delivery app with payment integration"
     plan_name = prompt.lower().replace(" ", "-")[:30]
     expander = PromptExpander()
-    assessment = expander.assess_complexity(prompt)
-    form = expander.build_discovery_form(prompt, plan_name, assessment)
+    form = expander.build_discovery_form(prompt, plan_name)
     print(form.to_markdown())
     print("\n--- XML Prompt ---\n")
     print(expander.to_xml_prompt(prompt, plan_name))

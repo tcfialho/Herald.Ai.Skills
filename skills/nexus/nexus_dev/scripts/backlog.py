@@ -883,44 +883,49 @@ def cmd_progress(bl_path: Path, _args: argparse.Namespace) -> None:
     pct = _pct(data)
     plan_ref = data.get("plan_ref", "?")
 
-    print(f"PROGRESSO: {plan_ref}  {_progress_bar(pct)} {pct}%")
+    print(f"\U0001F4CA PROGRESSO: {plan_ref}  [ {pct}% ]")
     print("")
 
     for story in data.get("stories", []):
         tasks = story.get("tasks", [])
-        completed = sum(1 for t in tasks if t["status"] == "completed")
+        completed_count = sum(1 for t in tasks if t["status"] == "completed")
         total = len(tasks)
 
-        all_done = total > 0 and completed == total
+        all_done = total > 0 and completed_count == total
         if all_done:
-            print(f"  [DONE] {story['id']} — {story['descricao']} ({completed}/{total})")
+            print(f"\u2705 [{story['id']}] {story['descricao']} ({completed_count}/{total})")
             continue
 
-        has_active = any(t["status"] == "in_progress" for t in tasks)
-        story_marker = "[>>>]" if has_active else "[   ]"
-        print(f"  {story_marker} {story['id']} — {story['descricao']} ({completed}/{total})")
+        print(f"\U0001F4D6 [{story['id']}] {story['descricao']}")
 
         for task in tasks:
             status = task["status"]
             failures = task.get("failures", 0)
 
             if status == "completed":
-                icon = "  [x]"
+                icon = "\u2705 \U0001F7E2"
             elif status == "in_progress":
-                icon = "  [>]"
+                icon = "\U0001F504 \U0001F534"
             else:
-                icon = "  [ ]"
+                icon = "\u23F3 \u26AA"
 
-            fail_note = f" ({failures}x falha)" if failures > 0 else ""
-            print(f"    {icon} {task['id']} — {task['title']} [{task['tipo']}]{fail_note}")
+            suffix = ""
+            if status == "in_progress":
+                suffix = " \u2190 EXECUTANDO"
+                if failures > 0:
+                    suffix += f" (\u26A0\uFE0F {failures}x falha)"
+            elif failures > 0:
+                suffix += f" (\u26A0\uFE0F {failures}x falha)"
+
+            print(f"  {icon} [{task['id']}] {task['title']} [{task['tipo']}]{suffix}")
 
         print("")
 
     ex = data.get("execution", {})
     total = ex.get("total_tasks", 0)
-    completed = ex.get("completed_tasks", 0)
+    completed_total = ex.get("completed_tasks", 0)
     failed = ex.get("failed_attempts", 0)
-    print(f"  Total: {completed}/{total} tasks | Falhas acumuladas: {failed}")
+    print(f"  Total: {completed_total}/{total} tasks | Falhas acumuladas: {failed}")
 
 
 def cmd_show(bl_path: Path, _args: argparse.Namespace) -> None:

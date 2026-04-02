@@ -34,7 +34,25 @@ Executar **TODAS** as tasks do plano sequencialmente, sem interrupção, produzi
 **INVARIANTE ABSOLUTA:** Não pare até que o backlog atinja 100% de conclusão.
 
 > [!IMPORTANT]
-> **PRIORIDADE MÁXIMA:** A exibição do painel `PROGRESSO` (via `backlog.py progress`) antes e depois de **CADA** task é mais importante que a própria implementação do código. Nunca agrupe tasks em um único output de progresso.
+> **PRIORIDADE MÁXIMA — EXIBIÇÃO DO PROGRESSO NO CHAT (HARD STOP):**
+>
+> Após executar `backlog.py progress` no terminal, você **DEVE** copiar a saída completa do terminal e colá-la no corpo da sua resposta de chat, dentro de um bloco de código. Se o progress não aparecer **visualmente no chat para o usuário ler**, a obrigação foi violada.
+>
+> **O que NÃO conta como exibição:** rodar o comando no terminal silenciosamente. O terminal é invisível ao usuário — somente texto na resposta do chat é visível.
+>
+> **Frequência obrigatória:** ANTES de iniciar cada task e DEPOIS de completar cada task. Nunca agrupe tasks em um único output de progresso.
+>
+> **Formato esperado (gerado pelo script):**
+> ```
+> 📊 PROGRESSO: plan-name  [ 38% ]
+>
+> ✅ [US-UC01-FP] Criar tarefa (2/2)
+>
+> 📖 [US-UC01-FA1] Criar tarefa sem título
+>   ✅ 🟢 [TASK-003] Schema da tabela [Dados]
+>   🔄 🔴 [TASK-004] Validação de campos [API] ← EXECUTANDO
+>   ⏳ ⚪ [TASK-005] Tratamento de erro UI [UI]
+> ```
 
 ---
 
@@ -174,8 +192,9 @@ Para cada iteração:
 2. Marcar como in_progress:
    python scripts/backlog.py {backlog} start TASK-XXX
 
-3. Exibir progresso no chat:
+3. Exibir progresso no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
    python scripts/backlog.py {backlog} progress
+   → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 
 4. IMPLEMENTAR A TASK:
    - Código 100% real (zero mocks, zero TODOs)
@@ -210,14 +229,24 @@ Para cada iteração:
 7. Micro-commit atômico (somente se complete aceito):
    git add -A && git commit -m "feat(scope): descricao"
 
-8. Exibir progresso atualizado no chat:
+8. Exibir progresso atualizado no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
    python scripts/backlog.py {backlog} progress
+   → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 ```
 
-**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP):**
-Em todas as iterações, exiba o output de `progress` no chat. A saída do progress é texto que você **copia para a resposta** do chat.
+**OBRIGAÇÃO DE PROGRESSO CONTÍNUO (HARD STOP — Violação Nível 1):**
 
-**Regra de ouro do layout:** Histórias 100% completas aparecem resumidas em uma linha (`[DONE]`). Histórias com tasks pendentes são expandidas com status por task.
+O output do comando `progress` roda no terminal, que é **invisível ao usuário**. Para o progresso ser útil, a IA DEVE:
+1. **Ler a saída do terminal** após executar `backlog.py progress`
+2. **Transcrever o bloco completo na resposta de chat**, dentro de um code block
+3. **Nunca omitir, resumir ou parafrasear** — colar o output literal
+
+Se o bloco de progresso não aparece na resposta de chat, o usuário não tem feedback algum. Isso é uma falha grave de UX e viola a obrigação constitucional.
+
+**Regra de ouro do layout (gerada pelo script):**
+- `✅` Histórias 100% completas aparecem resumidas em uma linha com contagem
+- `📖` Histórias com tasks pendentes são expandidas com status por task
+- `✅ 🟢` task completa | `🔄 🔴` task executando | `⏳ ⚪` task pendente
 
 ### Passo 4.1 — Protocolo de Auto-Correção (quando `complete` rejeita)
 
@@ -348,7 +377,6 @@ Informe ao usuário:
 .nexus/{plan_name}/
 ├── spec.json               ← Plano original (NÃO modificado pelo /dev)
 ├── spec.md                 ← Visualização do plano
-├── decision_manifest.json  ← Decisões compactas
 ├── visual.json             ← Decisões visuais (opcional, produzido pelo /proto)
 ├── backlog.json            ← Fonte de verdade da execução (contexto = spec + visual merged)
 └── evidence/               ← Gerado automaticamente pelo complete

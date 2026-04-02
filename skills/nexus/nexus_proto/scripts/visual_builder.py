@@ -9,7 +9,8 @@ The AI explores layouts (via SVGs, canvas, etc.) and collects user decisions.
 This script REGISTERS the final decisions — it does not generate visuals.
 
 Subcommands:
-  init           Create visual.json from an existing spec.json
+  init           Create visual.json from an existing spec.json (extracts UC context)
+  context        Display UC context for wireframe generation (all or per-screen)
   add-screen     Register a decided screen with its layout
   add-component  Register a component spec within a screen
   show           Display screen inventory
@@ -101,6 +102,42 @@ def _check_pipeline_order(spec_path: Path) -> None:
         sys.stderr.flush()
 
 
+def _extract_uc_context(spec: dict) -> list[dict]:
+    """Extract a focused UC summary from spec for wireframe generation.
+
+    Includes UC metadata + drilldown flows + referenced entities.
+    This avoids the AI needing to re-read the full spec.json.
+    """
+    ucs = spec.get("use_cases", [])
+    drilldowns = {dd["uc_id"]: dd for dd in spec.get("drilldowns", [])}
+    entity_names = {e["name"]: e["definition"] for e in spec.get("entities", [])}
+
+    context_list: list[dict] = []
+    for uc in ucs:
+        uc_id = uc["id"]
+        dd = drilldowns.get(uc_id, {})
+
+        alt_flow_summaries = []
+        for af in dd.get("alt_flows", []):
+            alt_flow_summaries.append({
+                "id": af["id"],
+                "description": af.get("description", ""),
+                "step_count": len(af.get("steps", [])),
+            })
+
+        context_list.append({
+            "uc_id": uc_id,
+            "name": uc.get("name", ""),
+            "description": uc.get("description", ""),
+            "actor": dd.get("actor", ""),
+            "preconditions": dd.get("preconditions", []),
+            "main_flow": dd.get("main_flow", []),
+            "alt_flows": alt_flow_summaries,
+            "postconditions": dd.get("postconditions", []),
+        })
+    return context_list
+
+
 def cmd_init(vpath: Path, args: argparse.Namespace) -> None:
     if vpath.exists():
         print(f"ERRO: visual.json ja existe: {vpath}", file=sys.stderr)
@@ -112,19 +149,22 @@ def cmd_init(vpath: Path, args: argparse.Namespace) -> None:
     with open(spec_path, "r", encoding="utf-8") as f:
         spec = json.load(f)
 
+    uc_context = _extract_uc_context(spec)
+
     data = {
         "nexus_version": "3.0",
         "plan_name": spec.get("plan_name", ""),
         "spec_ref": str(spec_path),
         "created_at": _utcnow(),
         "updated_at": _utcnow(),
+        "uc_context": uc_context,
         "screens": [],
     }
     _save(vpath, data)
     plan = spec.get("plan_name", "?")
-    ucs = len(spec.get("use_cases", []))
+    ucs = len(uc_context)
     print(f"OK visual.json criado: {vpath}")
-    print(f"   Plano: {plan} | UCs no spec: {ucs}")
+    print(f"   Plano: {plan} | UCs importados com contexto: {ucs}")
 
 
 def cmd_add_screen(vpath: Path, args: argparse.Namespace) -> None:
@@ -198,6 +238,64 @@ def cmd_add_component(vpath: Path, args: argparse.Namespace) -> None:
 # ------------------------------------------------------------------
 # DISPLAY commands
 # ------------------------------------------------------------------
+
+
+def cmd_context(vpath: Path, args: argparse.Namespace) -> None:
+    data = _load(vpath)
+    uc_context = data.get("uc_context", [])
+
+    if not uc_context:
+        print("AVISO: Nenhum contexto de UC encontrado no visual.json.", file=sys.stderr)
+        print("   Re-crie visual.json com 'init' para importar contexto do spec.", file=sys.stderr)
+        return
+
+    target_uc_ids: set[str] | None = None
+    if args.screen:
+        screen = _find_screen(data, args.screen)
+        if screen is None:
+            print(f"ERRO: Screen '{args.screen}' nao encontrada.", file=sys.stderr)
+            sys.exit(1)
+        target_uc_ids = set(screen.get("uc_refs", []))
+        print(f"CONTEXTO para Screen '{args.screen}' (UCs: {', '.join(sorted(target_uc_ids))})")
+    else:
+        print(f"CONTEXTO COMPLETO ({len(uc_context)} UCs)")
+
+    print("")
+
+    shown = 0
+    for uc in uc_context:
+        if target_uc_ids is not None and uc["uc_id"] not in target_uc_ids:
+            continue
+
+        shown += 1
+        print(f"  === {uc['uc_id']}: {uc['name']} ===")
+        print(f"  Descricao: {uc['description']}")
+        print(f"  Ator: {uc['actor']}")
+
+        pcs = uc.get("preconditions", [])
+        if pcs:
+            print(f"  Pre-condicoes: {'; '.join(pcs)}")
+
+        main_flow = uc.get("main_flow", [])
+        if main_flow:
+            print(f"  Fluxo Principal ({len(main_flow)} passos):")
+            for i, step in enumerate(main_flow, 1):
+                print(f"    {i}. {step}")
+
+        alt_flows = uc.get("alt_flows", [])
+        if alt_flows:
+            print(f"  Fluxos Alternativos:")
+            for af in alt_flows:
+                print(f"    {af['id']}: {af['description']} ({af['step_count']} passos)")
+
+        posts = uc.get("postconditions", [])
+        if posts:
+            print(f"  Pos-condicoes: {'; '.join(posts)}")
+
+        print("")
+
+    if shown == 0 and target_uc_ids is not None:
+        print(f"  Nenhum UC encontrado para refs: {', '.join(sorted(target_uc_ids))}")
 
 
 def cmd_show(vpath: Path, _args: argparse.Namespace) -> None:
@@ -296,6 +394,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("init", help="Criar visual.json a partir de spec.json")
     s.add_argument("--spec", required=True, help="Caminho do spec.json")
 
+    s = sub.add_parser("context", help="Exibir contexto de UCs para wireframe")
+    s.add_argument("--screen", default="", help="Filtrar por screen ID (mostra UCs referenciados)")
+
     s = sub.add_parser("add-screen", help="Registrar screen decidida")
     s.add_argument("--id", required=True, help="ID da screen (ex: S01)")
     s.add_argument("--name", required=True, help="Nome da screen")
@@ -321,6 +422,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _ACTIONS = {
     "init": cmd_init,
+    "context": cmd_context,
     "add-screen": cmd_add_screen,
     "decide": cmd_decide,
     "add-component": cmd_add_component,

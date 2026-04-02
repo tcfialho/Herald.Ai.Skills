@@ -51,10 +51,11 @@ A IA **NUNCA** escreve visual.json diretamente. Toda leitura e escrita passa por
 
 ```
 BUILD:     init, add-screen, decide, add-component
+CONTEXT:   context [--screen SXX]
 DISPLAY:   show, validate
 ```
 
-O `visual.json` registra **apenas decisões finais** — sem status, sem variantes A/B, sem SVGs. O SVG é ferramenta de comunicação entre IA e usuário, não artefato de execução.
+O `visual.json` registra decisões finais + contexto dos UCs importado do spec. Sem variantes A/B, sem SVGs. O SVG é ferramenta de comunicação entre IA e usuário, não artefato de execução.
 
 > `{visual}` é atalho para `{project_root}/.nexus/{plan_name}/visual.json` nos exemplos a seguir.
 
@@ -73,14 +74,29 @@ python scripts/visual_builder.py {visual} init --spec {project_root}/.nexus/{pla
 
 ## FLUXO OBRIGATÓRIO
 
-### Passo 1 — Inventário de Screens
+### Passo 1 — Leitura de Contexto e Inventário de Screens
 
-Leia o spec.json (via contexto mental do `/plan`) e identifique telas:
-- Cada UC com interação visual → screen candidate
+**1a. Leia o contexto extraído do spec:**
+
+O `init` importa automaticamente os drill-downs de cada UC (ator, fluxo principal, fluxos alternativos, pré/pós-condições). Consulte-os antes de inventariar telas:
+
+```bash
+python scripts/visual_builder.py {visual} context
+```
+
+Isso exibe o resumo de todos os UCs sem precisar reabrir o `spec.json` inteiro.
+
+**1b. Identifique telas a partir dos fluxos:**
+
+Com o contexto carregado, mapeie screens:
+- Cada UC cujo fluxo principal descreve interação visual → screen candidate
+- UCs que compartilham a mesma superfície (ex: HUD + arena no mesmo canvas) → screen única com múltiplos `uc-refs`
 - Entidades com CRUD → listagem + formulário
 - Estados especiais (empty state, loading, error) → screen variant
 
-Registre cada screen identificada:
+**A granularidade é por Caso de Uso, não por story.** Um UC gera 1+ screens. Múltiplos UCs podem convergir para 1 screen se compartilham a mesma tela.
+
+**1c. Registre cada screen identificada:**
 ```bash
 python scripts/visual_builder.py {visual} add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03
 python scripts/visual_builder.py {visual} add-screen --id S02 --name "Formulario de Criacao" --uc-refs UC-01
@@ -99,18 +115,25 @@ python scripts/visual_builder.py {visual} show
 
 Para cada screen, a IA:
 
-1. **Identifica a dimensão em disputa** — o ponto onde existem 2+ abordagens válidas
+1. **Carrega o contexto dos UCs da screen** — obrigatório antes de desenhar qualquer wireframe:
+   ```bash
+   python scripts/visual_builder.py {visual} context --screen S01
    ```
-   Screen: S01 — Lista de Tarefas
+   Isso exibe os fluxos, atores e condições **apenas** dos UCs referenciados pela screen, sem poluir com o spec inteiro.
+
+2. **Identifica a dimensão em disputa** — o ponto onde existem 2+ abordagens válidas. A dimensão deve ser derivada dos fluxos do UC (ex: se o fluxo tem 3 passos de interação, o wireframe deve acomodar esses passos).
+   ```
+   Screen: S01 — Lista de Tarefas (UC-01: criar tarefa, UC-03: filtrar)
    Dimensão: posição dos filtros (topo vs lateral)
+   Contexto: UC-03.FP exige 4 critérios de filtro simultâneos
    ```
 
-2. **Gera wireframe A/B** — via SVG salvo em disco ou canvas interativo
+3. **Gera wireframe A/B** — via SVG salvo em disco ou canvas interativo
    - SVGs vão para `.nexus/{plan_name}/wireframes/{screen_id}_iter{N}.svg`
    - Canvas pode ser usado como alternativa ao SVG
-   - A IA explica a intenção de cada variante ao apresentar
+   - A IA explica a intenção de cada variante **referenciando os passos do fluxo do UC**
 
-3. **Coleta a decisão do usuário:**
+4. **Coleta a decisão do usuário:**
    ```
    Responda com:
      A        → escolher variante A
@@ -123,6 +146,7 @@ Para cada screen, a IA:
 - Uma dimensão por wireframe — sem misturar layout com densidade
 - Máximo 5 iterações por screen antes de forçar decisão
 - Se mudança implica funcionalidade nova → BLOCK e voltar ao `/plan`
+- O wireframe DEVE refletir os passos do fluxo do UC — não invente interações ausentes no spec
 
 ---
 

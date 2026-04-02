@@ -41,7 +41,7 @@ constitutional_gate:
     - 'O documento DEVE integrar o Padrão Funcional UML (Diagrama, Dicionário, Matriz, Drill-down).'
     - 'O Diagrama Mermaid de Casos de Uso DEVE usar `graph LR`, atores com `shape: circle` (e emojis), e relações formatadas como `-.-o|extend|` ou `-.-o|include|`.'
     - 'O Dicionário de Atores DEVE ser categorizado em Tabela Markdown: `Ator | Tipo | Responsabilidade`.'
-    - 'A Matriz de Casos de Uso DEVE conter a coluna ID com identificador único no formato UC-XX (ex: UC-01, UC-02). O ID é estável e usado como referência por todas as fases downstream (/proto, /dev).'
+    - 'A Matriz de Casos de Uso DEVE conter a coluna ID com identificador único no formato UC-XX (ex: UC-01, UC-02). O ID é estável e usado como referência por todas as fases downstream (/proto, /dev). UCs inferidos de código existente DEVEM ser registrados com `--origin inferred`; UCs novos usam o default `new`. O `/dev` só gera stories para UCs com origin=new.'
     - 'O número de Drill-downs gerados DEVE ser EXATAMENTE IGUAL ao número de UCs listados na Matriz. É estritamente PROIBIDO omitir, resumir ou pular qualquer UC. Faça o drill-down 1:1.'
     - 'Cada Drill-down de UC DEVE possuir estrutura fixa: ID (UC-XX), Ator, Descrição, Pré-Condições, Fluxo Principal (UC-XX.FP) numerado, Fluxos Alternativos (UC-XX.FA1, UC-XX.FA2, ...) cada um com ID derivado e passos numerados, Pós-condições e Micro-Dicionário de Entidades Envolvidas.'
     - 'ZERO linhas de código funcional durante /plan — apenas especificação.'
@@ -65,6 +65,52 @@ autonomy_boundaries:
 ---
 
 ## FLUXO OBRIGATÓRIO (execute em ordem)
+
+### Passo 0 — Detecção de Contexto (Greenfield vs Evolução)
+
+**ANTES de qualquer análise, classifique o cenário:**
+
+Verifique se `{project_root}/.nexus/spec.json` já existe no workspace.
+
+**Se spec.json existe, verifique se há execução ativa:**
+```bash
+python scripts/spec_builder.py next-run
+```
+- Se retornar `ACTIVE_RUN` (exit 1): **HALT** — informe ao usuário:
+  > Há uma run ativa em `.nexus/runs/NNN/`. Complete o `/dev` e `/review` antes de adicionar novas features.
+- Se retornar `NEXT_RUN` (exit 0): seguro prosseguir com evolução.
+
+**Cenário A — spec.json existe, sem run ativa (evolução de projeto):**
+
+O projeto já passou por `/plan` anteriormente. O objetivo é **acrescentar features** ao plano existente, sem refazer o que já foi especificado.
+
+1. Execute `spec_builder.py show --detail` para mapear estado atual (IDs, decisões, UCs, EARS, entidades).
+2. **NÃO chame `init`** — o spec.json já existe. Todos os subcomandos fazem upsert e aceitam adições incrementais.
+3. No **Passo 2 (Discovery)**, execute **Delta Discovery**: pergunte APENAS sobre as features NOVAS solicitadas. Decisões existentes são preservadas salvo conflito explícito. Se uma decisão existente impacta a feature nova, mencione-a como contexto, não como pergunta.
+4. Use os IDs de continuação informados pelo `--detail` (ex: próximo UC = UC-08, próximo EARS = REQ-15) para numerar os novos artefatos.
+5. Nos Passos 3-5, registre apenas os artefatos NOVOS via subcomandos normais. O upsert protege contra duplicação.
+6. No **Passo 5 (render)**, o spec.md será regenerado completo (antigo + novo).
+
+**Cenário B — sem spec.json, com código existente:**
+
+O projeto tem código funcional mas nunca passou pelo pipeline Nexus. O objetivo é **criar um spec.json que represente o estado atual** e depois acrescentar as features novas.
+
+1. Analise a estrutura do projeto: arquivos-fonte, testes, configurações, dependências.
+2. Identifique UCs implícitos no código (rotas, handlers, componentes, módulos).
+3. Execute `init` normalmente com overview derivado da análise.
+4. Auto-popule o spec com UCs, EARS, atores e entidades que descrevam o **comportamento já implementado**. Marque as decisões como `--auto-assumed` com rationale "Inferido do codigo existente". **Marque os UCs existentes com `--origin inferred`** para que o `/dev` saiba que já estão implementados e não gere stories para eles:
+   ```bash
+   python scripts/spec_builder.py uc --id UC-01 --name "Funcionalidade existente" --description "..." --origin inferred
+   ```
+5. Prossiga para o **Passo 2 (Discovery)** com Delta Discovery — pergunte apenas sobre as features NOVAS.
+6. Registre os UCs das features novas **sem `--origin`** (default = `new`) ou com `--origin new` explícito. Apenas UCs `new` gerarão stories no `/dev`.
+7. Fluxo normal dali em diante.
+
+**Cenário C — greenfield (sem spec.json, sem código):**
+
+Projeto novo. Siga o fluxo original a partir do Passo 1 sem alterações.
+
+---
 
 ### Passo 1 — Context Engineering (GSD)
 
@@ -91,7 +137,9 @@ Estruture o pedido do usuário no formato XML antes de qualquer análise:
 
 **MUDE SEU ESTADO PARA: `WAITING_FOR_DISCOVERY_INPUT`**
 
-Apresente o formulário de descoberta COMPLETO antes de prosseguir.
+**Escopo do Discovery (determinado pelo Passo 0):**
+- **Cenário C (greenfield):** Apresente o formulário de descoberta COMPLETO.
+- **Cenários A/B (evolução):** Apresente **Delta Discovery** — pergunte APENAS sobre decisões que as features NOVAS exigem. Decisões já registradas no spec.json são tratadas como contexto fixo (liste-as como "Decisões herdadas" no início do formulário para visibilidade, mas NÃO re-pergunte). Se uma decisão existente colide com a feature nova, sinalize o conflito explicitamente como pergunta.
 
 **Formato obrigatório por pergunta:**
 ```
@@ -166,7 +214,7 @@ validation:
 
 Para cada pergunta respondida, registre a decisão via `spec_builder.py`:
 ```bash
-python scripts/spec_builder.py .nexus/{plan_name}/spec.json decision --label "Persistência" --chosen "PostgreSQL (A)" --rationale "Banco relacional maduro para o domínio."
+python scripts/spec_builder.py decision --label "Persistência" --chosen "PostgreSQL (A)" --rationale "Banco relacional maduro para o domínio."
 ```
 
 **Auto-Assumption:** Se o usuário submeter o formulário sem responder uma pergunta específica (campo em branco, letra "X", traço ou "-") → assume a recomendação e registre como decisão normalmente, informando:
@@ -217,61 +265,65 @@ Use o caminho absoluto da pasta aberta na IDE (`workspaceFolder`). Nunca use `".
 
 > **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/spec_builder.py`.
 
-**Inicialização:**
+**Inicialização (apenas Cenários B e C — no Cenário A, pular):**
 ```bash
-python scripts/spec_builder.py {project_root}/.nexus/{plan_name}/spec.json init --plan "{plan_name}" --title "{TITULO}" --overview "{visao geral}"
+python scripts/spec_builder.py init --plan "{plan_name}" --title "{TITULO}" --overview "{visao geral}"
 ```
 
 **Decisões (já registradas no Passo 3, mas podem ser adicionadas/atualizadas aqui):**
 ```bash
-python scripts/spec_builder.py {spec} decision --label "Auth" --chosen "JWT (A)" --rationale "Stateless, escala horizontal."
+python scripts/spec_builder.py decision --label "Auth" --chosen "JWT (A)" --rationale "Stateless, escala horizontal."
 ```
 
 **EARS Requirements:**
 ```bash
-python scripts/spec_builder.py {spec} ear --id REQ-01 --type WHEN --notation "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms."
+python scripts/spec_builder.py ear --id REQ-01 --type WHEN --notation "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms."
 ```
 
 **Atores:**
 ```bash
-python scripts/spec_builder.py {spec} actor --name "Comprador" --type "Humanos" --responsibility "Criar e cancelar pedidos."
+python scripts/spec_builder.py actor --name "Comprador" --type "Humanos" --responsibility "Criar e cancelar pedidos."
 ```
 
 **Casos de Uso (Matriz):**
 ```bash
-python scripts/spec_builder.py {spec} uc --id UC-01 --name "Criar Pedido" --description "Submissao de novo pedido pelo comprador."
+# UC novo (default, gera stories no /dev):
+python scripts/spec_builder.py uc --id UC-01 --name "Criar Pedido" --description "Submissao de novo pedido pelo comprador."
+
+# UC inferido de codigo existente (NAO gera stories no /dev — apenas documenta):
+python scripts/spec_builder.py uc --id UC-01 --name "Login" --description "Autenticacao de usuario." --origin inferred
 ```
 
 **Diagrama Mermaid de Casos de Uso:**
 ```bash
 # Escreva o mermaid em arquivo temporário e passe via --file
-python scripts/spec_builder.py {spec} uc-diagram --file .temp/uc-diagram.mmd
+python scripts/spec_builder.py uc-diagram --file .temp/uc-diagram.mmd
 # OU inline com \n
-python scripts/spec_builder.py {spec} uc-diagram --mermaid "graph LR\n    User((Comprador))\n    ..."
+python scripts/spec_builder.py uc-diagram --mermaid "graph LR\n    User((Comprador))\n    ..."
 ```
 
 **Drill-downs (1 por UC — OBRIGATÓRIO):**
 ```bash
-python scripts/spec_builder.py {spec} drilldown --uc-id UC-01 --actor "Comprador" --preconditions "Usuario autenticado." --main-flow "Step 1" "Step 2" "Step 3" --postconditions "Pedido criado."
+python scripts/spec_builder.py drilldown --uc-id UC-01 --actor "Comprador" --preconditions "Usuario autenticado." --main-flow "Step 1" "Step 2" "Step 3" --postconditions "Pedido criado."
 # Fluxos alternativos (se existirem)
-python scripts/spec_builder.py {spec} alt-flow --uc-id UC-01 --id UC-01.FA1 --description "Validacao falha" --steps "Sistema exibe erros." "Usuario corrige campos."
+python scripts/spec_builder.py alt-flow --uc-id UC-01 --id UC-01.FA1 --description "Validacao falha" --steps "Sistema exibe erros." "Usuario corrige campos."
 ```
 
 **Entidades, Invariantes, NFRs:**
 ```bash
-python scripts/spec_builder.py {spec} entity --name "Pedido" --type "Domain" --definition "Requisicao formal de compra."
-python scripts/spec_builder.py {spec} invariant --text "Pedido cancelado jamais transita para outro estado."
-python scripts/spec_builder.py {spec} nfr --label "Performance" --text "API response time < 500ms for 95th percentile."
+python scripts/spec_builder.py entity --name "Pedido" --type "Domain" --definition "Requisicao formal de compra."
+python scripts/spec_builder.py invariant --text "Pedido cancelado jamais transita para outro estado."
+python scripts/spec_builder.py nfr --label "Performance" --text "API response time < 500ms for 95th percentile."
 ```
 
 **Verificação e Renderização:**
 ```bash
-python scripts/spec_builder.py {spec} show       # resumo do estado atual
-python scripts/spec_builder.py {spec} validate   # valida completude
-python scripts/spec_builder.py {spec} render     # gera spec.md
+python scripts/spec_builder.py show       # resumo do estado atual
+python scripts/spec_builder.py validate   # valida completude
+python scripts/spec_builder.py render     # gera spec.md
 ```
 
-> **Nota:** `{spec}` é atalho para `{project_root}/.nexus/{plan_name}/spec.json`.  
+> **Nota:** Os scripts auto-descobrem `.nexus/` a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.  
 > Cada subcomando faz upsert (idempotente) — chamar duas vezes com o mesmo ID atualiza em vez de duplicar.
 
 **Seções do spec.md gerado (numeração fixa):**
@@ -289,8 +341,8 @@ python scripts/spec_builder.py {spec} render     # gera spec.md
 ## ARTEFATOS PRODUZIDOS
 
 ```
-.nexus/{plan_name}/
-├── spec.json                ← Fonte de verdade estruturada (construída incrementalmente)
+.nexus/
+├── spec.json                ← Fonte de verdade estruturada (cresce a cada /plan)
 └── spec.md                  ← Visualização renderizada do spec.json (gerada por `render`)
 ```
 
@@ -308,6 +360,6 @@ O `/plan` está COMPLETO quando `spec_builder.py validate` passa sem erros:
 - [ ] `render` executado com sucesso → `spec.md` gerado
 
 **Após `render` bem-sucedido, informe ao usuário:**
-> Plano gerado em `.nexus/{plan_name}/spec.md`  
+> Plano gerado em `.nexus/spec.md`  
 > Execute `/dev` para iniciar a implementação.
 

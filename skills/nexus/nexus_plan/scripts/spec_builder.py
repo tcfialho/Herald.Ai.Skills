@@ -25,9 +25,10 @@ Subcommands:
   render      Gerar spec.md
 
 Usage:
-  python spec_builder.py .nexus/plan/spec.json init --plan "my-plan" --overview "..."
-  python spec_builder.py .nexus/plan/spec.json ear --id REQ-01 --type WHEN --notation "WHEN ..."
-  python spec_builder.py .nexus/plan/spec.json render
+  python spec_builder.py .nexus/spec.json init --plan "my-plan" --overview "..."
+  python spec_builder.py .nexus/spec.json ear --id REQ-01 --type WHEN --notation "WHEN ..."
+  python spec_builder.py .nexus/spec.json render
+  python spec_builder.py .nexus/spec.json next-run
 """
 
 from __future__ import annotations
@@ -235,11 +236,20 @@ def _render_md(data: dict) -> str:
     lines.append("### 4.3 Matriz de Casos de Uso")
     lines.append("")
     ucs = data.get("use_cases", [])
+    has_inferred = any(uc.get("origin", "new") == "inferred" for uc in ucs)
     if ucs:
-        lines.append("| ID | Nome | Descrição |")
-        lines.append("|----|------|-----------|")
-        for uc in ucs:
-            lines.append(f"| **{uc['id']}** | {uc['name']} | {uc['description']} |")
+        if has_inferred:
+            lines.append("| ID | Nome | Descrição | Origin |")
+            lines.append("|----|------|-----------|--------|")
+            for uc in ucs:
+                origin = uc.get("origin", "new")
+                origin_label = "inferred" if origin == "inferred" else "new"
+                lines.append(f"| **{uc['id']}** | {uc['name']} | {uc['description']} | {origin_label} |")
+        else:
+            lines.append("| ID | Nome | Descrição |")
+            lines.append("|----|------|-----------|")
+            for uc in ucs:
+                lines.append(f"| **{uc['id']}** | {uc['name']} | {uc['description']} |")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -402,10 +412,16 @@ def cmd_actor(spec_path: Path, args: argparse.Namespace) -> None:
 
 def cmd_uc(spec_path: Path, args: argparse.Namespace) -> None:
     data = _load(spec_path)
-    entry = {"id": args.id, "name": args.name, "description": args.description}
+    entry = {
+        "id": args.id,
+        "name": args.name,
+        "description": args.description,
+        "origin": args.origin,
+    }
     action = _upsert(data["use_cases"], entry, "id")
     _save(spec_path, data)
-    print(f"OK {args.id} '{args.name}' {action} — total: {len(data['use_cases'])} UCs")
+    origin_tag = f" [origin={args.origin}]" if args.origin != "new" else ""
+    print(f"OK {args.id} '{args.name}' {action}{origin_tag} — total: {len(data['use_cases'])} UCs")
 
 
 def cmd_uc_diagram(spec_path: Path, args: argparse.Namespace) -> None:
@@ -502,7 +518,7 @@ def cmd_nfr(spec_path: Path, args: argparse.Namespace) -> None:
     print(f"OK NFR{label_str} {action} — total: {len(data['nfrs'])}")
 
 
-def cmd_show(spec_path: Path, _args: argparse.Namespace) -> None:
+def cmd_show(spec_path: Path, args: argparse.Namespace) -> None:
     data = _load(spec_path)
     decisions = len(data.get("decisions", []))
     ears = len(data.get("ears", []))
@@ -527,6 +543,54 @@ def cmd_show(spec_path: Path, _args: argparse.Namespace) -> None:
     elif ucs > 0 and dds == ucs:
         print(f"   Drill-downs: 1:1 com UCs (OK)")
 
+    if getattr(args, "detail", False):
+        print("")
+        print("DETAIL:")
+
+        if data.get("decisions"):
+            labels = [d["label"] for d in data["decisions"]]
+            print(f"   Decisoes: {', '.join(labels)}")
+
+        ear_list = data.get("ears", [])
+        if ear_list:
+            ids = [e["id"] for e in ear_list]
+            print(f"   EARS IDs: {', '.join(ids)}")
+            max_num = max(
+                (int(re.search(r"\d+", e["id"]).group()) for e in ear_list if re.search(r"\d+", e["id"])),
+                default=0,
+            )
+            print(f"   Proximo EARS: REQ-{max_num + 1:02d}")
+
+        uc_list = data.get("use_cases", [])
+        if uc_list:
+            new_count = sum(1 for uc in uc_list if uc.get("origin", "new") == "new")
+            inferred_count = len(uc_list) - new_count
+            for uc in uc_list:
+                origin = uc.get("origin", "new")
+                origin_tag = " [inferred]" if origin == "inferred" else ""
+                print(f"   UC {uc['id']}: {uc['name']}{origin_tag}")
+            max_num = max(
+                (int(re.search(r"\d+", uc["id"]).group()) for uc in uc_list if re.search(r"\d+", uc["id"])),
+                default=0,
+            )
+            print(f"   Proximo UC: UC-{max_num + 1:02d}")
+            if inferred_count > 0:
+                print(f"   Origin: {new_count} new, {inferred_count} inferred")
+
+        actor_list = data.get("actors", [])
+        if actor_list:
+            print(f"   Atores: {', '.join(a['name'] for a in actor_list)}")
+
+        entity_list = data.get("entities", [])
+        if entity_list:
+            print(f"   Entidades: {', '.join(e['name'] for e in entity_list)}")
+
+        inv_list = data.get("invariants", [])
+        if inv_list:
+            print(f"   Invariantes: {len(inv_list)}")
+
+        print(f"   Overview: {(data.get('overview', '') or '')[:120]}...")
+
 
 def cmd_validate(spec_path: Path, _args: argparse.Namespace) -> None:
     data = _load(spec_path)
@@ -540,6 +604,66 @@ def cmd_validate(spec_path: Path, _args: argparse.Namespace) -> None:
     ucs = len(data.get("use_cases", []))
     entities = len(data.get("entities", []))
     print(f"OK spec.json valido ({ears} EARS, {ucs} UCs, {entities} entidades)")
+
+
+def _run_is_fully_closed(run_dir: Path) -> bool:
+    """A run is closed only when backlog is completed AND review is APPROVED."""
+    review_path = run_dir / "review.json"
+    if not review_path.exists():
+        return False
+    with open(review_path, "r", encoding="utf-8") as f:
+        review = json.load(f)
+    return review.get("verdict") == "APPROVED"
+
+
+def cmd_next_run(spec_path: Path, _args: argparse.Namespace) -> None:
+    """Resolve the next available run folder, or report the active one."""
+    runs_dir = spec_path.parent / "runs"
+
+    if not runs_dir.exists():
+        next_path = runs_dir / "001"
+        print(f"NEXT_RUN: {next_path}")
+        return
+
+    existing = sorted(
+        (d for d in runs_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+        key=lambda d: int(d.name),
+    )
+
+    if not existing:
+        next_path = runs_dir / "001"
+        print(f"NEXT_RUN: {next_path}")
+        return
+
+    for run_dir in reversed(existing):
+        bl_path = run_dir / "backlog.json"
+        if not bl_path.exists():
+            continue
+
+        with open(bl_path, "r", encoding="utf-8") as f:
+            backlog = json.load(f)
+        status = backlog.get("status", "building")
+        ex = backlog.get("execution", {})
+        total = ex.get("total_tasks", 0)
+        completed = ex.get("completed_tasks", 0)
+        pct = int((completed / total) * 100) if total > 0 else 0
+
+        if status == "completed" and _run_is_fully_closed(run_dir):
+            next_num = int(run_dir.name) + 1
+            next_path = runs_dir / f"{next_num:03d}"
+            print(f"NEXT_RUN: {next_path}")
+            print(f"   Ultima run: {run_dir.name} (completed + reviewed)")
+            return
+
+        phase = "dev" if status != "completed" else "review"
+        print(f"ACTIVE_RUN: {run_dir}", file=sys.stderr)
+        print(f"   Fase pendente: {phase} | Status: {status} | Progresso: {completed}/{total} ({pct}%)", file=sys.stderr)
+        sys.exit(1)
+
+    max_num = int(existing[-1].name)
+    next_path = runs_dir / f"{max_num + 1:03d}"
+    print(f"NEXT_RUN: {next_path}")
+    print(f"   Nenhuma run com backlog encontrada")
 
 
 def cmd_render(spec_path: Path, args: argparse.Namespace) -> None:
@@ -616,6 +740,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--id", required=True, help="ID do UC (ex: UC-01)")
     s.add_argument("--name", required=True, help="Nome do caso de uso")
     s.add_argument("--description", required=True, help="Descricao")
+    s.add_argument("--origin", choices=["new", "inferred"], default="new",
+                   help="Origem do UC: 'new' (feature nova) ou 'inferred' (inferido de codigo existente)")
 
     # uc-diagram
     s = sub.add_parser("uc-diagram", help="Definir diagrama Mermaid de casos de uso")
@@ -655,7 +781,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--text", required=True, help="Texto do NFR")
 
     # show
-    sub.add_parser("show", help="Exibir resumo do spec.json")
+    s = sub.add_parser("show", help="Exibir resumo do spec.json")
+    s.add_argument("--detail", action="store_true", help="Listar IDs existentes e proximos IDs disponiveis")
 
     # validate
     sub.add_parser("validate", help="Verificar completude do spec.json")
@@ -663,6 +790,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # render
     s = sub.add_parser("render", help="Gerar spec.md")
     s.add_argument("--force", action="store_true", help="Renderizar mesmo com erros de validacao")
+
+    # next-run
+    sub.add_parser("next-run", help="Resolver proxima run disponivel ou reportar run ativa")
 
     return p
 
@@ -682,10 +812,34 @@ _ACTIONS = {
     "show": cmd_show,
     "validate": cmd_validate,
     "render": cmd_render,
+    "next-run": cmd_next_run,
 }
 
 
+def _find_nexus_root() -> "Path | None":
+    """Walk up from CWD to find .nexus/ directory."""
+    current = Path.cwd()
+    while True:
+        candidate = current / ".nexus"
+        if candidate.is_dir():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in _ACTIONS:
+        nexus = _find_nexus_root()
+        if nexus is None and sys.argv[1] == "init":
+            nexus = Path.cwd() / ".nexus"
+        if nexus is None:
+            print("ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.", file=sys.stderr)
+            sys.exit(1)
+        sys.argv.insert(1, str(nexus / "spec.json"))
+
     parser = _build_parser()
     args = parser.parse_args()
     spec_path = Path(args.spec_path)

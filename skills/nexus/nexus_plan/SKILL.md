@@ -21,7 +21,7 @@ activation_instructions:
   - STEP 2: Internalizar o constitutional_gate e os autonomy_boundaries abaixo.
   - STEP 3: Executar o FLUXO OBRIGATÓRIO em ordem, respeitando cada HALT e validation block.
   - LANGUAGE RULE: Todas as perguntas de discovery e o spec.md gerado DEVEM estar em PT-BR.
-  - OUTPUT RULE: Use `scripts/spec_builder.py` via terminal para construir o spec.json incrementalmente. Ao final, execute `render` para gerar spec.md e decision_manifest.json.
+  - OUTPUT RULE: Use `scripts/spec_builder.py` via terminal para construir o spec.json incrementalmente. Ao final, execute `render` para gerar spec.md.
 ```
 
 # 🎯 NEXUS `/plan` — ENHANCED PROMPT ENGINEERING
@@ -59,7 +59,7 @@ autonomy_boundaries:
     - 'NFRs padrão quando a categoria for conhecida (ex: latência < 500ms para web APIs)'
   must_not_invent:
     - 'Acceptance criteria sem EARS requirement de backing correspondente'
-    - 'Decisões de auth/persistência sem Discovery Gate respondido ou auto-assumido'
+    - 'Decisões de auth/persistência sem Discovery Gate respondido, auto-assumido ou explicitamente suprimido'
 ```
 
 ---
@@ -104,7 +104,27 @@ Apresente o formulário de descoberta COMPLETO antes de prosseguir.
 **Regras do formulário:**
 - Sempre ofereça A/B com recomendação explícita
 - NUNCA jogue o ônus do design no usuário sem opções
-- Cubra: Funcional | Usuários | Auth | Persistência | NFRs | Segurança | Deploy | Testes
+
+**Categorias de discovery e relevância contextual:**
+
+As categorias abaixo são o **universo possível** de perguntas. A IA **NÃO** pergunta todas mecanicamente — ela avalia o prompt e **suprime** categorias irrelevantes ao domínio, registrando a supressão com justificativa.
+
+| Categoria | Sempre? | Quando suprimir |
+|-----------|---------|----------------|
+| **Funcional** | SIM | Nunca — sempre há decisão funcional a tomar |
+| **Usuários** | SIM | Nunca — sempre há perfil de uso a definir |
+| **NFRs (Performance, etc.)** | SIM | Nunca — todo projeto tem metas mensuráveis |
+| **Deploy** | SIM | Nunca — a forma de entrega afeta a arquitetura |
+| **Auth** | Condicional | Suprimir quando o prompt indica app offline/local sem contas (ex.: jogo local, CLI tool, widget) |
+| **Persistência** | Condicional | Suprimir quando não há dados que sobrevivam à sessão (ex.: jogo sem save, ferramenta stateless) |
+| **Segurança** | Condicional | Suprimir quando não há PII, rede, nem integrações externas (ex.: jogo offline, demo local) |
+
+**Categorias PROIBIDAS no discovery (invariantes do pipeline):**
+- **Testes:** o pipeline `/dev` e `/review` já impõem TDD, verify_cmd obrigatório, Gherkin e regressão. Perguntar ao usuário "quer testes?" é redundante e passível de gerar a ilusão de que testes são opcionais.
+
+**Regra de supressão:** Se uma categoria condicional não se aplica ao domínio, a IA **não pergunta** e **não registra decisão** para ela. Em vez disso, registra um item na seção de Decisões com `label: "[Categoria] — N/A"`, `chosen: "Suprimido"` e `rationale` explicando por quê.
+
+**Regra de foco:** Cada pergunta deve abordar uma **decisão que afeta a arquitetura, o código ou a experiência do usuário**. Perguntas cujas respostas não alteram nenhum artefato downstream são desperdício de interação e devem ser eliminadas.
 
 **Atores, UCs e Dicionário de Entidades — colete durante o discovery:**  
 Extraia todos os Atores (usuários/sistemas externos), Casos de Uso (UCs) e Entidades Críticas.  
@@ -132,9 +152,9 @@ Exemplos:
 
 ```yaml
 validation:
-  - check: 'Todas as categorias obrigatórias foram cobertas (Funcional | Usuários | Auth | Persistência | NFRs | Segurança | Deploy | Testes).'
+  - check: 'Todas as categorias obrigatórias foram cobertas (Funcional | Usuários | NFRs | Deploy) e categorias condicionais (Auth | Persistência | Segurança) foram avaliadas quanto à relevância — cobertas ou explicitamente suprimidas com justificativa.'
     onFailure: halt
-    message: 'Formulário de discovery incompleto. Não prossiga para Passo 3 sem cobertura total.'
+    message: 'Formulário de discovery incompleto. Não prossiga para Passo 3 sem cobertura das categorias obrigatórias e avaliação explícita das condicionais.'
     blocking: true
   - check: 'Ao menos uma entidade de domínio e um invariante foram identificados.'
     onFailure: warn
@@ -193,7 +213,7 @@ validation:
 **ANTES de iniciar, determine o workspace root:**  
 Use o caminho absoluto da pasta aberta na IDE (`workspaceFolder`). Nunca use `"."` literal. Se indisponível, pergunte: `"Em qual pasta devo salvar o plano?"`.
 
-**FERRAMENTA:** `scripts/spec_builder.py` — CLI que a IA chama via terminal para construir o `spec.json` incrementalmente. Cada subcomando adiciona dados à seção correspondente. Ao final, `render` gera `spec.md` + `decision_manifest.json`.
+**FERRAMENTA:** `scripts/spec_builder.py` — CLI que a IA chama via terminal para construir o `spec.json` incrementalmente. Cada subcomando adiciona dados à seção correspondente. Ao final, `render` gera `spec.md`.
 
 > **Nota de caminho:** `scripts/` é relativo ao diretório desta skill. Resolva o caminho absoluto: `python {skill_dir}/scripts/spec_builder.py`.
 
@@ -248,7 +268,7 @@ python scripts/spec_builder.py {spec} nfr --label "Performance" --text "API resp
 ```bash
 python scripts/spec_builder.py {spec} show       # resumo do estado atual
 python scripts/spec_builder.py {spec} validate   # valida completude
-python scripts/spec_builder.py {spec} render     # gera spec.md + decision_manifest.json
+python scripts/spec_builder.py {spec} render     # gera spec.md
 ```
 
 > **Nota:** `{spec}` é atalho para `{project_root}/.nexus/{plan_name}/spec.json`.  
@@ -271,8 +291,7 @@ python scripts/spec_builder.py {spec} render     # gera spec.md + decision_manif
 ```
 .nexus/{plan_name}/
 ├── spec.json                ← Fonte de verdade estruturada (construída incrementalmente)
-├── spec.md                  ← Visualização renderizada do spec.json (gerada por `render`)
-└── decision_manifest.json   ← Formato compacto para propagação em stories/tasks (gerado por `render`)
+└── spec.md                  ← Visualização renderizada do spec.json (gerada por `render`)
 ```
 
 ---
@@ -286,7 +305,7 @@ O `/plan` está COMPLETO quando `spec_builder.py validate` passa sem erros:
 - [ ] Drill-downs 1:1 com UCs na Matriz (zero omissões)
 - [ ] Todas as questões do Discovery Form foram respondidas (ou auto-assumidas)
 - [ ] Zero requisitos vagos (sem "rápido", "fácil", "robusto" sem métrica)
-- [ ] `render` executado com sucesso → `spec.md` + `decision_manifest.json` gerados
+- [ ] `render` executado com sucesso → `spec.md` gerado
 
 **Após `render` bem-sucedido, informe ao usuário:**
 > Plano gerado em `.nexus/{plan_name}/spec.md`  

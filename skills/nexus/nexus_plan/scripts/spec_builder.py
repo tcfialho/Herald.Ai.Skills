@@ -4,7 +4,7 @@ Nexus Plan — Spec Builder
 
 CLI tool that the AI agent calls to incrementally build spec.json.
 Each subcommand adds structured data to the correct section.
-The `render` subcommand converts spec.json → spec.md + decision_manifest.json.
+The `render` subcommand converts spec.json → spec.md.
 
 Replaces: plan_generator.py, option_resolver.py
 
@@ -22,7 +22,7 @@ Subcommands:
   nfr         Adicionar requisito não-funcional
   show        Exibir resumo do spec.json
   validate    Verificar completude do spec.json
-  render      Gerar spec.md e decision_manifest.json
+  render      Gerar spec.md
 
 Usage:
   python spec_builder.py .nexus/plan/spec.json init --plan "my-plan" --overview "..."
@@ -557,31 +557,11 @@ def cmd_render(spec_path: Path, args: argparse.Namespace) -> None:
     md_path = spec_path.parent / "spec.md"
     md_path.write_text(md, encoding="utf-8")
 
-    manifest = {
-        "plan_name": data.get("plan_name", "UNKNOWN"),
-        "decisions": [
-            {
-                "id": f"D{i:02d}",
-                "category": d["label"],
-                "question": d["label"],
-                "chosen": d["chosen"],
-                "rationale": d["rationale"],
-                "auto_assumed": d.get("auto_assumed", False),
-                "risk": "low",
-            }
-            for i, d in enumerate(data.get("decisions", []), 1)
-        ],
-    }
-    manifest_path = spec_path.parent / "decision_manifest.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-
     ears = len(data.get("ears", []))
     ucs = len(data.get("use_cases", []))
     entities = len(data.get("entities", []))
     print(f"OK spec.md renderizado: {md_path}")
     print(f"   {ears} EARS | {ucs} UCs | {entities} entidades")
-    print(f"OK decision_manifest.json gerado: {manifest_path}")
     if errors:
         print(f"AVISO: Renderizado com {len(errors)} problema(s) (--force)")
 
@@ -681,7 +661,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("validate", help="Verificar completude do spec.json")
 
     # render
-    s = sub.add_parser("render", help="Gerar spec.md e decision_manifest.json")
+    s = sub.add_parser("render", help="Gerar spec.md")
     s.add_argument("--force", action="store_true", help="Renderizar mesmo com erros de validacao")
 
     return p

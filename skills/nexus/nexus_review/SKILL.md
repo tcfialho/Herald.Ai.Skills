@@ -17,11 +17,13 @@ Pipeline: /plan → /proto (opcional) → /dev → /review
 2. `/dev` concluído (`backlog.json` com histórias, tasks e execução 100%)
 
 Antes de executar qualquer comando do `reviewer.py`:
-1. Verifique se `.nexus/{plan_name}/backlog.json` existe
-2. Verifique se o backlog contém histórias e tasks (o `/dev` de fato populou o backlog)
+1. Execute `spec_builder.py next-run` para verificar se há run ativa
+   - Se `ACTIVE_RUN`: há run para revisar
+   - Se `NEXT_RUN`: não há run ativa — HALT (o `/dev` precisa ser executado)
+2. Verifique se a run contém `backlog.json` com histórias e tasks
 
-**Se `backlog.json` não existir:** HALT — informe ao usuário:
-> backlog.json não encontrado. Execute `/dev` primeiro.
+**Se não houver run ativa:** HALT — informe ao usuário:
+> Nenhuma run ativa encontrada. Execute `/dev` primeiro.
 > Ordem correta: /plan → /dev → /review
 
 **Se `backlog.json` não contiver histórias ou tasks:** HALT — informe ao usuário:
@@ -60,7 +62,7 @@ CERTIFY:   certify
 DISPLAY:   show
 ```
 
-> `{review}` é atalho para `{project_root}/.nexus/{plan_name}/review.json` nos exemplos a seguir.
+> **Nota:** Os scripts auto-descobrem `.nexus/` e a run ativa a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.
 
 ---
 
@@ -70,7 +72,7 @@ Antes de iniciar:
 1. Verifique que `backlog.json` existe e está 100% completo
 2. Execute check-readiness:
 ```bash
-python scripts/reviewer.py {review} check-readiness --backlog {backlog}
+python scripts/reviewer.py check-readiness
 ```
 Se tasks estiverem pendentes: **HALT** — informe ao usuário para completar `/dev` primeiro.
 
@@ -81,7 +83,7 @@ Se tasks estiverem pendentes: **HALT** — informe ao usuário para completar `/
 ### Passo 1 — Check Readiness
 
 ```bash
-python scripts/reviewer.py {review} check-readiness --backlog {backlog}
+python scripts/reviewer.py check-readiness
 ```
 
 O script verifica:
@@ -112,7 +114,7 @@ npx jest
 
 ```bash
 # Somente após 0 falhas confirmadas:
-python scripts/reviewer.py {review} report-regression --passed 25 --failed 0
+python scripts/reviewer.py report-regression --passed 25 --failed 0
 ```
 
 **Cuidado com regressão em cascata:** ao corrigir um bug, re-execute TODOS os testes novamente — a correção pode ter quebrado outra coisa.
@@ -157,9 +159,9 @@ python -m py_compile src/**/*.py
 
 ```bash
 # Somente após build limpo:
-python scripts/reviewer.py {review} report-build --passed --warnings 0
+python scripts/reviewer.py report-build --passed --warnings 0
 # Se houver warnings não-críticos que não podem ser resolvidos:
-python scripts/reviewer.py {review} report-build --passed --warnings 3
+python scripts/reviewer.py report-build --passed --warnings 3
 ```
 
 **Critério:** Build deve PASSAR. Warnings devem ser minimizados — corrija todos que for possível. Reporte apenas os que genuinamente não podem ser resolvidos (ex: warning de dependência externa).
@@ -179,7 +181,7 @@ Para **cada** requisito EARS do spec, a IA inspeciona o código e testes para ve
 5. **Somente quando compliant**: reporte.
 
 ```bash
-python scripts/reviewer.py {review} report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42 + tests/test_task.py:15"
+python scripts/reviewer.py report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42 + tests/test_task.py:15"
 ```
 
 **Status possíveis:**
@@ -199,7 +201,7 @@ python scripts/reviewer.py {review} report-compliance --ear REQ-01 --status comp
 ### Passo 5 — Certify (Script computa veredicto)
 
 ```bash
-python scripts/reviewer.py {review} certify
+python scripts/reviewer.py certify
 ```
 
 O script computa o veredicto a partir de 5 gates determinísticos:
@@ -263,11 +265,14 @@ Se **sim**:
 ## ARTEFATOS PRODUZIDOS
 
 ```
-.nexus/{plan_name}/
-├── backlog.json    ← (existente, fonte de verdade do /dev)
-├── evidence/       ← (existente, gerado pelo /dev)
-├── review.json     ← Estado do review (gates, reports, veredicto)
-└── review.md       ← Certificado de conformidade (se APPROVED)
+.nexus/
+├── spec.json          ← (existente, especificação do projeto)
+└── runs/
+    └── {run}/         ← Run ativa (ex: 001)
+        ├── backlog.json   ← (existente, fonte de verdade do /dev)
+        ├── evidence/      ← (existente, gerado pelo /dev)
+        ├── review.json    ← Estado do review (gates, reports, veredicto)
+        └── review.md      ← Certificado de conformidade (se APPROVED)
 ```
 
 ---

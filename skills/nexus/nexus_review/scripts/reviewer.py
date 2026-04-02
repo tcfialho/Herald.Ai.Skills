@@ -22,12 +22,12 @@ Subcommands:
     show               Display current review state
 
 Usage:
-  python reviewer.py .nexus/plan/review.json check-readiness --backlog .nexus/plan/backlog.json
-  python reviewer.py .nexus/plan/review.json report-regression --passed 25 --failed 0
-  python reviewer.py .nexus/plan/review.json report-build --passed --warnings 0
-  python reviewer.py .nexus/plan/review.json report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42"
-  python reviewer.py .nexus/plan/review.json certify
-  python reviewer.py .nexus/plan/review.json show
+  python reviewer.py .nexus/runs/001/review.json check-readiness --backlog .nexus/runs/001/backlog.json
+  python reviewer.py .nexus/runs/001/review.json report-regression --passed 25 --failed 0
+  python reviewer.py .nexus/runs/001/review.json report-build --passed --warnings 0
+  python reviewer.py .nexus/runs/001/review.json report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42"
+  python reviewer.py .nexus/runs/001/review.json certify
+  python reviewer.py .nexus/runs/001/review.json show
 """
 
 from __future__ import annotations
@@ -108,7 +108,10 @@ def _check_pipeline_order(bl_path: Path) -> dict:
 
 
 def cmd_check_readiness(rpath: Path, args: argparse.Namespace) -> None:
-    bl_path = Path(args.backlog)
+    if args.backlog:
+        bl_path = Path(args.backlog)
+    else:
+        bl_path = rpath.parent / "backlog.json"
     backlog = _check_pipeline_order(bl_path)
 
     ex = backlog.get("execution", {})
@@ -462,7 +465,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="action", required=True)
 
     s = sub.add_parser("check-readiness", help="Verificar se backlog esta pronto para review")
-    s.add_argument("--backlog", required=True, help="Caminho do backlog.json")
+    s.add_argument("--backlog", default="", help="Caminho do backlog.json (auto-descobre se omitido)")
 
     s = sub.add_parser("report-regression", help="Registrar resultado de testes regressivos")
     s.add_argument("--passed", type=int, required=True, help="Testes que passaram")
@@ -497,7 +500,47 @@ _ACTIONS = {
 }
 
 
+def _find_nexus_root() -> "Path | None":
+    """Walk up from CWD to find .nexus/ directory."""
+    current = Path.cwd()
+    while True:
+        candidate = current / ".nexus"
+        if candidate.is_dir():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def _resolve_active_run(nexus_root: Path) -> "Path | None":
+    """Find the latest run directory that has a backlog.json."""
+    runs_dir = nexus_root / "runs"
+    if not runs_dir.exists():
+        return None
+    for d in sorted(
+        (x for x in runs_dir.iterdir() if x.is_dir() and x.name.isdigit()),
+        key=lambda x: int(x.name),
+        reverse=True,
+    ):
+        if (d / "backlog.json").exists():
+            return d
+    return None
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in _ACTIONS:
+        nexus = _find_nexus_root()
+        if nexus is None:
+            print("ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.", file=sys.stderr)
+            sys.exit(1)
+        run_dir = _resolve_active_run(nexus)
+        if run_dir is None:
+            print("ERRO: nenhuma run com backlog encontrada em .nexus/runs/.", file=sys.stderr)
+            sys.exit(1)
+        sys.argv.insert(1, str(run_dir / "review.json"))
+
     parser = _build_parser()
     args = parser.parse_args()
     rpath = Path(args.review_path)

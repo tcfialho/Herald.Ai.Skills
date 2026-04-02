@@ -10,7 +10,7 @@ description: >
   Use when the user asks about project health, quality gate status, SonarCloud dashboard,
   coverage, security rating, code quality metrics, sonar issues, code smells,
   bugs, vulnerabilities, security hotspots, fix sonar, correct sonar issues,
-  or corrigir issues do sonar.
+  or fix sonar issues.
 ---
 
 # SonarCloud — Health, Issues & Fix
@@ -21,6 +21,7 @@ description: >
 - **NEVER** read, log, print, or reference the `SONAR_TOKEN` / `SONARCLOUD_TOKEN` value. The token is managed exclusively by the scripts. The AI has zero contact with credentials.
 - **NEVER** construct SonarCloud URLs with query parameters to fetch data. If a capability is missing from the scripts, inform the user — do not work around it.
 - The scripts are the **only** interface between the AI and SonarCloud. They receive flags, return JSON. That is the contract.
+- **NEVER** truncate, summarize, or cap the file list in the Issues by File view. **ALL** files with issues MUST be listed — no "top 5", no "+N files" row, no omission of any file for any reason. Displaying a partial list is a violation of this skill's contract.
 
 ---
 
@@ -170,15 +171,16 @@ Based on the user message:
 
 4. **Offer drill-down** — only show categories that have issues > 0. Use a numbered list:
 
-   **Detalhar issues?**
-   1. **Security** (N vulnerabilities + M hotspots) — only if security.issues > 0 OR securityHotspots.count > 0
-   2. **Reliability** (N bugs) — only if reliability.issues > 0
-   3. **Maintainability** (N code smells) — only if maintainability.issues > 0
-   4. Não, obrigado
+   **Detalhar as issues?**
+   1. **Segurança** (N vulnerabilidades + M hotspots) — only if security.issues > 0 OR securityHotspots.count > 0
+   2. **Confiabilidade** (N bugs) — only if reliability.issues > 0
+   3. **Manutenibilidade** (N code smells) — only if maintainability.issues > 0
+
+   **No decline option:** do not list "Não, obrigado" or any alternative just to decline; do not ask the user to confirm disinterest. Users who do not want to drill down simply do not need to reply.
 
    If ZERO issues across all categories, skip the question entirely.
 
-5. If the user selects a category → proceed to **Step 3B** with that category pre-set.
+5. If the user replies with a **valid category number** from that list → proceed to **Step 3B** with that category pre-set. Otherwise → end (do not insist or ask for a negative confirmation).
 
 ### Step 3B — Issues by File
 
@@ -186,26 +188,26 @@ Based on the user message:
 
 2. From the JSON output, build a **file-centric view**: group issues by file, count per file, build severity breakdown per file.
 
-3. Format using the **Issues by File Template** (below), showing top 5 files.
+3. Format using the **Issues by File Template** (below). **ALL files with issues MUST be shown — no truncation, no cap, no "+N files" summary row under any circumstance. Displaying a partial list is a hard violation of this skill's contract.**
 
-4. **Offer action** with numbered list:
+4. **Offer action** with a numbered list that **matches the table you just showed** (never invent extra numbers beyond what the table contains):
 
    **Como prosseguir?**
-   1. **Corrigir arquivo** — informe o número (1-5) ou `6` para ver todos
-   2. **Corrigir tudo** (N issues, M arquivos)
-   3. Não corrigir
+   1. **Corrigir arquivo** — informe o número da linha da tabela acima (**1 … K**, onde *K* = total de linhas numeradas). Um intervalo inclusivo também é válido: dois limites separados por hífen sem espaços obrigatórios; processar cada arquivo coberto **na ordem da tabela**.
+   2. **Corrigir todos** (N issues, M arquivos)
+   3. **Voltar ao health** — re-exibir `## 📊 SonarCloud Health — {project}` (mesmo **Health Display Template**, mesmo `project` e `branch` da sessão); depois oferecer **Detalhar as issues?** como no Step 3A.
 
 5. Based on user selection:
-   - **Number 1-5** → proceed to **Step 3C** for that file
-   - **"Corrigir tudo"** → proceed to **Step 3C** in batch mode (all files)
-   - **"6" (ver todos)** → show full file list, then repeat the action question
-   - **"Não corrigir"** → end
+   - **Number 1…K** (table row) → proceed to **Step 3C** for that file
+   - **Table row range** (two inclusive bounds separated by a hyphen) → process **each** file in that interval **in table order** using **batch mode** (compact progress list, single build+test at the end — same as "Corrigir todos", scoped to those files only)
+   - **"Corrigir todos"** → proceed to **Step 3C** in batch mode (all files)
+   - **"Voltar ao health"** → re-run **Tool 3** (`sonar.py health`) with the same `--project` and `--branch` as the current analysis; output **Health Display Template**; continue from Step 3A item 4 (drill-down)
 
 ### Step 3C — Fix
 
 **IMPORTANT — Fix guardrails (read before proceeding):**
-- Fix **only** when the user explicitly asked to fix (via Step 3B action or direct "corrigir" intent)
-- Fix **only** operates on the current workspace repository. If the project being analyzed differs from the workspace repo, inform the user: "O fix só opera no repositório aberto no workspace. Abra o projeto no Cursor para corrigir."
+- Fix **only** when the user explicitly asked to fix (via Step 3B action or direct "fix" intent)
+- Fix **only** operates on the current workspace repository. If the project being analyzed differs from the workspace repo, inform the user: "A correção atua somente no repositório aberto no workspace. Abra o projeto no Cursor para aplicar as correções."
 - **NEVER** use suppression mechanisms to "fix" an issue. See **Suppression Prohibition** below.
 - After fixing, **always** run build + test validation. See **Stack Detection** below for commands.
 
@@ -227,15 +229,28 @@ Based on the user message:
 
 6. After correcting all issues in the file, show the result:
 
-   ✅ **N/N corrigidas** em `filename.cs`
+   ✅ **N/N fixed** in `filename.cs`
    - (bullet list summarizing what was changed, grouped by rule)
 
-7. Offer the next step:
+7. Offer the next step — **attention to what already happened in this turn** (do not suggest redoing it).
+
+   Track the **remaining files**: the subset of the original Step 3B table that has **not yet been fixed** in this session, preserving original row numbers and order. Let *R* = count of remaining files and *T* = total remaining issues.
+
+   Build the menu with **no gaps** in numbering, including **only** the applicable options:
 
    **Próximo passo?**
-   1. **Próximo arquivo:** `NextFile.cs` (N issues) — only if there are more files
-   2. Build + test
-   3. Pronto
+   1. **Próximo arquivo:** `` `ProximoArquivo.cs` `` (N issues) — include **only** if R ≥ 1; omit entirely if no files remain.
+   2. **Corrigir intervalo** — informe o intervalo (ex.: `3-7`, usando os números originais da tabela Step 3B) — include **only** if R ≥ 2; omit if R < 2.
+   3. **Corrigir todos os restantes** (T issues, R arquivos) — include **only** if R ≥ 2; omit if R < 2.
+   4. **Concluído** — always present as the last option.
+
+   Number options **1, 2, …** in order with **no gaps** (e.g., if R = 1, list only options 1 and 4, renumbered as 1 and 2).
+
+   Based on user selection:
+   - **"Próximo arquivo"** → proceed to **Step 3C** for that file (single-file mode).
+   - **"Corrigir intervalo" + range** → process each file in that interval **in table order** using **batch mode** (compact progress list, single build+test at the end).
+   - **"Corrigir todos os restantes"** → proceed to **Step 3C** in batch mode for all remaining files.
+   - **"Concluído"** → end the workflow.
 
 #### Fix batch (all files)
 
@@ -265,11 +280,11 @@ Detect the project stack from the workspace and run the appropriate commands:
 
 Show result:
 
-🔨 **Build:** `<command>`
-✅ Build succeeded (0 warnings) — or ❌ with error details
+🔨 **Build:** `<comando>`
+✅ Build bem-sucedido (0 avisos) — ou ❌ com detalhes do erro
 
-🧪 **Test:** `<command>`
-✅ N tests passed — or ❌ with failure details
+🧪 **Test:** `<comando>`
+✅ N testes passaram — ou ❌ com detalhes da falha
 
 If build fails, investigate the error and fix. If tests fail, review whether the correction changed behavior and update tests if needed.
 
@@ -319,27 +334,29 @@ Every issue must be fixed at the root. If a fix is genuinely not possible (e.g.,
 ### Health Display Template
 
 Rating emoji mapping: A → `🟢`, B → `🟡`, C → `🟠`, D → `🔴`, E → `⛔`
-Quality Gate: OK → `✅ Passed`, WARN → `⚠️ Warning`, ERROR → `❌ Failed`
+Quality Gate: OK → `✅ Aprovado`, WARN → `⚠️ Aviso`, ERROR → `❌ Falhou`
 
 ```
 ## 📊 SonarCloud Health — {project}
 
-**Branch:** `{branch}` | **Last analysis:** {lastAnalysis} | **Lines of code:** {linesOfCode}
+**Branch:** `{branch}` | **Última análise:** {lastAnalysis} | **Linhas de código:** {linesOfCode}
 
 ### Quality Gate: {qualityGate.status_emoji} {qualityGate.status}
 
-| Category | Rating | Details |
-|----------|--------|---------|
-| **📋 Overview** | | **{overview.openIssues}** open issues · **{overview.duplications}** duplications · **{overview.coverage}** coverage |
-| **🔒 Security** | {security.rating_emoji} **{security.rating}** | {security.issues} vulnerabilities |
+| Categoria | Rating | Detalhe |
+|-----------|--------|---------|
+| **📋 Visão geral** | | **{overview.openIssues}** issues abertas · **{overview.duplications}** duplicações · **{overview.coverage}** cobertura |
+| **🔒 Segurança** | {security.rating_emoji} **{security.rating}** | {security.issues} vulnerabilidades |
 | **🔥 Security Hotspots** | {securityHotspots.rating_emoji} **{securityHotspots.rating}** | {securityHotspots.count} hotspots |
-| **🛡️ Reliability** | {reliability.rating_emoji} **{reliability.rating}** | {reliability.issues} bugs |
-| **🔧 Maintainability** | {maintainability.rating_emoji} **{maintainability.rating}** | {maintainability.issues} code smells |
+| **🛡️ Confiabilidade** | {reliability.rating_emoji} **{reliability.rating}** | {reliability.issues} bugs |
+| **🔧 Manutenibilidade** | {maintainability.rating_emoji} **{maintainability.rating}** | {maintainability.issues} code smells |
 ```
 
 If the Quality Gate has `ERROR` or `WARN` status, append a conditions table.
 
 ### Issues by File Template
+
+List **ALL** files — never truncate. The `severity_breakdown` is a compact inline string like `2 major · 7 info`.
 
 ```
 ### {category_emoji} {category_name} — {total_issues} issues em {file_count} arquivos
@@ -348,26 +365,23 @@ If the Quality Gate has `ERROR` or `WARN` status, append a conditions table.
 |---|---------|--------|---------|
 | 1 | `{short_path}` | {count} | {severity_breakdown} |
 | 2 | `{short_path}` | {count} | {severity_breakdown} |
-| ... | | | |
-| | *… +N arquivos (M issues)* | | |
+| … | … | … | … |
 ```
-
-Show top 5 files. The `severity_breakdown` is a compact inline string like `2 major · 7 info`.
 
 ### File Issues Template
 
 ```
 ### 📄 {filename} — {issue_count} issues
 
-| # | Linha | Regra | Descrição | Sev. |
-|---|-------|-------|-----------|------|
+| # | Linha | Regra | Descrição | Grav. |
+|---|-------|-------|-----------|-------|
 | 1 | {line} | `{rule}` | {message} | {severity} |
 ```
 
 ### Fix Result Template
 
 ```
-✅ **N/N corrigidas** em `{filename}`
+✅ **N/N fixed** in `{filename}`
 
 - {summary of changes grouped by rule}
 ```
@@ -376,23 +390,23 @@ Show top 5 files. The `severity_breakdown` is a compact inline string like `2 ma
 
 ```
 🔨 **Build:** `{command}`
-✅ Build succeeded (0 warnings)
+✅ Build bem-sucedido (0 avisos)
 
 🧪 **Test:** `{command}`
-✅ N tests passed
+✅ N testes passaram
 ```
 
 ---
 
 ## Error Handling
 
-| Error | Action |
-|---|---|
-| `TOKEN_NOT_FOUND` | Run Tool 2 (browser login) |
-| `REPO_NOT_DETECTED` | Ask user for project name |
-| `PROJECT_NOT_FOUND` | Ask user for correct project name |
-| `FETCH_FAILED` | Report API error to user |
-| `MISSING_PARAM` | Report missing parameter |
+| Erro | Ação |
+|------|------|
+| `TOKEN_NOT_FOUND` | Executar Tool 2 (login via navegador) |
+| `REPO_NOT_DETECTED` | Solicitar ao usuário o nome do projeto |
+| `PROJECT_NOT_FOUND` | Solicitar ao usuário o nome correto do projeto |
+| `FETCH_FAILED` | Reportar erro de API ao usuário |
+| `MISSING_PARAM` | Reportar parâmetro ausente |
 
 ---
 

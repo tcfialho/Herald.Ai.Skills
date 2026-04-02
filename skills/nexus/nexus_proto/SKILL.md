@@ -20,13 +20,13 @@ Pipeline: /plan → /proto (opcional) → /dev → /review
 **Dependência obrigatória:** `/plan` concluído (`spec.json` com UCs registrados)
 
 Antes de executar qualquer comando do `visual_builder.py`:
-1. Verifique se `.nexus/{plan_name}/spec.json` existe
+1. Verifique se `.nexus/spec.json` existe
 2. Verifique se o spec tem ao menos 1 caso de uso registrado
 
 **Se `spec.json` não existir ou estiver vazio:** HALT — informe ao usuário:
 > spec.json não encontrado ou incompleto. Execute `/plan` primeiro.
 
-**Se `backlog.json` já existir no mesmo diretório:** WARN — o `/dev` já foi iniciado e o visual.json NÃO será incorporado automaticamente. Para incluir decisões visuais, o backlog precisa ser recriado.
+**Se houver uma run ativa em `.nexus/runs/`:** WARN — o `/dev` já foi iniciado e o visual.json NÃO será incorporado automaticamente. Para incluir decisões visuais, o backlog precisa ser recriado.
 
 > O script `visual_builder.py init` já aplica essas validações automaticamente.
 
@@ -57,17 +57,17 @@ DISPLAY:   show, validate
 
 O `visual.json` registra decisões finais + contexto dos UCs importado do spec. Sem variantes A/B, sem SVGs. O SVG é ferramenta de comunicação entre IA e usuário, não artefato de execução.
 
-> `{visual}` é atalho para `{project_root}/.nexus/{plan_name}/visual.json` nos exemplos a seguir.
+> **Nota:** Os scripts auto-descobrem `.nexus/` a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.
 
 ---
 
 ## PRÉ-CONDIÇÃO OBRIGATÓRIA
 
 Antes de iniciar:
-1. Verifique que `.nexus/{plan_name}/spec.json` existe (produzido por `/plan`)
+1. Verifique que `.nexus/spec.json` existe (produzido por `/plan`)
 2. Crie o visual.json:
 ```bash
-python scripts/visual_builder.py {visual} init --spec {project_root}/.nexus/{plan_name}/spec.json
+python scripts/visual_builder.py init
 ```
 
 ---
@@ -81,7 +81,7 @@ python scripts/visual_builder.py {visual} init --spec {project_root}/.nexus/{pla
 O `init` importa automaticamente os drill-downs de cada UC (ator, fluxo principal, fluxos alternativos, pré/pós-condições). Consulte-os antes de inventariar telas:
 
 ```bash
-python scripts/visual_builder.py {visual} context
+python scripts/visual_builder.py context
 ```
 
 Isso exibe o resumo de todos os UCs sem precisar reabrir o `spec.json` inteiro.
@@ -98,13 +98,13 @@ Com o contexto carregado, mapeie screens:
 
 **1c. Registre cada screen identificada:**
 ```bash
-python scripts/visual_builder.py {visual} add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03
-python scripts/visual_builder.py {visual} add-screen --id S02 --name "Formulario de Criacao" --uc-refs UC-01
+python scripts/visual_builder.py add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03
+python scripts/visual_builder.py add-screen --id S02 --name "Formulario de Criacao" --uc-refs UC-01
 ```
 
 Exiba o inventário e confirme com o usuário:
 ```bash
-python scripts/visual_builder.py {visual} show
+python scripts/visual_builder.py show
 ```
 
 **HALT:** Confirme o inventário com o usuário. Adicione ou remova screens se solicitado.
@@ -117,7 +117,7 @@ Para cada screen, a IA:
 
 1. **Carrega o contexto dos UCs da screen** — obrigatório antes de desenhar qualquer wireframe:
    ```bash
-   python scripts/visual_builder.py {visual} context --screen S01
+   python scripts/visual_builder.py context --screen S01
    ```
    Isso exibe os fluxos, atores e condições **apenas** dos UCs referenciados pela screen, sem poluir com o spec inteiro.
 
@@ -129,7 +129,7 @@ Para cada screen, a IA:
    ```
 
 3. **Gera wireframe A/B** — via SVG salvo em disco ou canvas interativo
-   - SVGs vão para `.nexus/{plan_name}/wireframes/{screen_id}_iter{N}.svg`
+   - SVGs vão para `.nexus/wireframes/{screen_id}_iter{N}.svg`
    - Canvas pode ser usado como alternativa ao SVG
    - A IA explica a intenção de cada variante **referenciando os passos do fluxo do UC**
 
@@ -156,17 +156,17 @@ Quando o usuário decide, a IA registra via CLI:
 
 ```bash
 # Layout geral da tela
-python scripts/visual_builder.py {visual} decide --screen S01 \
+python scripts/visual_builder.py decide --screen S01 \
   --layout "Filtros no topo com pills 22px horizontais. Lista abaixo com checkbox e texto. Input de criacao inline no rodape."
 
 # Componentes com spec individual
-python scripts/visual_builder.py {visual} add-component --screen S01 \
+python scripts/visual_builder.py add-component --screen S01 \
   --name FilterBar --spec "Pills 22px horizontais no topo. Cor ativa: primary. Max 4 filtros visiveis."
 
-python scripts/visual_builder.py {visual} add-component --screen S01 \
+python scripts/visual_builder.py add-component --screen S01 \
   --name TaskList --spec "Checkbox + texto por item. Strikethrough quando completa. Scroll vertical."
 
-python scripts/visual_builder.py {visual} add-component --screen S01 \
+python scripts/visual_builder.py add-component --screen S01 \
   --name CreateInput --spec "Input inline no rodape. Botao Criar a direita. Placeholder: Nova tarefa."
 ```
 
@@ -184,8 +184,8 @@ Repita Passos 2-3 para cada screen pendente.
 Quando todas as screens tiverem layout e componentes:
 
 ```bash
-python scripts/visual_builder.py {visual} validate --spec {spec.json}
-python scripts/visual_builder.py {visual} show
+python scripts/visual_builder.py validate
+python scripts/visual_builder.py show
 ```
 
 O `validate --spec` verifica:
@@ -204,10 +204,10 @@ O `validate --spec` verifica:
 O `/dev` **não lê** visual.json diretamente. O merge é automático no `backlog.py init`:
 
 ```bash
-python backlog.py {backlog} init --spec {spec.json}
+python backlog.py init
 ```
 
-Se `visual.json` existir no mesmo diretório do spec.json, o backlog importa as screens automaticamente para `context.screens`, indexadas por UC. Quando a IA pede contexto de uma task (via `next` ou `context`), o layout aparece:
+Se `visual.json` existir no mesmo diretório do spec.json (`.nexus/`), o backlog importa as screens automaticamente para `context.screens`, indexadas por UC. Quando a IA pede contexto de uma task (via `next` ou `context`), o layout aparece:
 
 ```
 LAYOUT (telas do UC-01):
@@ -225,7 +225,7 @@ Se o `/proto` não foi executado, o `/dev` funciona normalmente — a seção LA
 ## ARTEFATOS PRODUZIDOS
 
 ```
-.nexus/{plan_name}/
+.nexus/
 ├── spec.json               ← (existente, gerado pelo /plan — NÃO modificado)
 ├── visual.json             ← Decisões visuais finais (screens + componentes)
 └── wireframes/             ← SVGs de exploração (referência visual, descartáveis)
@@ -254,9 +254,9 @@ Se a IA optar por gerar wireframes SVG para exploração:
 - Tokens CSS: `var(--color-background-primary)`, `var(--color-border-tertiary)`, etc.
 - Labels em PT-BR, dados placeholder coerentes com o domínio
 - Sem gradientes, sombras ou efeitos ricos — wireframe é estrutural
-- Salvar em: `.nexus/{plan_name}/wireframes/{screen_id}_iter{N}.svg`
+- Salvar em: `.nexus/wireframes/{screen_id}_iter{N}.svg`
 - Exibir mensagem após salvar:
   ```
-  SVG salvo em: .nexus/{plan_name}/wireframes/S01_iter1.svg
+  SVG salvo em: .nexus/wireframes/S01_iter1.svg
   Abra no VS Code ou browser para visualizar.
   ```

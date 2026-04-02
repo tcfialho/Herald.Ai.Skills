@@ -17,11 +17,11 @@ Subcommands:
   validate       Check completeness (all screens have layout + components)
 
 Usage:
-  python visual_builder.py .nexus/plan/visual.json init --spec .nexus/plan/spec.json
-  python visual_builder.py .nexus/plan/visual.json add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03 --layout "Filtros no topo..."
-  python visual_builder.py .nexus/plan/visual.json add-component --screen S01 --name FilterBar --spec "Pills 22px horizontais..."
-  python visual_builder.py .nexus/plan/visual.json show
-  python visual_builder.py .nexus/plan/visual.json validate
+  python visual_builder.py .nexus/visual.json init --spec .nexus/spec.json
+  python visual_builder.py .nexus/visual.json add-screen --id S01 --name "Lista de Tarefas" --uc-refs UC-01 UC-03 --layout "Filtros no topo..."
+  python visual_builder.py .nexus/visual.json add-component --screen S01 --name FilterBar --spec "Pills 22px horizontais..."
+  python visual_builder.py .nexus/visual.json show
+  python visual_builder.py .nexus/visual.json validate
 """
 
 from __future__ import annotations
@@ -88,18 +88,22 @@ def _check_pipeline_order(spec_path: Path) -> None:
         print("   Execute: python spec_builder.py {spec} uc --id UC-01 ...", file=sys.stderr)
         sys.exit(1)
 
-    backlog_path = spec_path.parent / "backlog.json"
-    if backlog_path.exists():
-        with open(backlog_path, "r", encoding="utf-8") as f:
-            backlog = json.load(f)
-        status = backlog.get("status", "?")
-        sys.stderr.flush()
-        sys.stdout.flush()
-        print("AVISO: backlog.json ja existe neste plano — /dev ja foi iniciado.", file=sys.stderr)
-        print(f"   Status do backlog: {status}", file=sys.stderr)
-        print("   O visual.json NAO sera incorporado ao backlog existente.", file=sys.stderr)
-        print("   Para incluir visual no /dev: delete backlog.json e re-execute 'backlog.py init'.", file=sys.stderr)
-        sys.stderr.flush()
+    runs_dir = spec_path.parent / "runs"
+    if runs_dir.exists():
+        active_runs = sorted(
+            (d for d in runs_dir.iterdir() if d.is_dir() and (d / "backlog.json").exists()),
+            key=lambda d: d.name,
+        )
+        for run_dir in reversed(active_runs):
+            with open(run_dir / "backlog.json", "r", encoding="utf-8") as f:
+                backlog = json.load(f)
+            status = backlog.get("status", "?")
+            if status != "completed":
+                print(f"AVISO: run ativa detectada em {run_dir.name} — /dev ja foi iniciado.", file=sys.stderr)
+                print(f"   Status do backlog: {status}", file=sys.stderr)
+                print("   O visual.json NAO sera incorporado ao backlog existente.", file=sys.stderr)
+                print("   Para incluir visual no /dev: recrie o backlog com 'backlog.py init'.", file=sys.stderr)
+                break
 
 
 def _extract_uc_context(spec: dict) -> list[dict]:
@@ -143,7 +147,14 @@ def cmd_init(vpath: Path, args: argparse.Namespace) -> None:
         print(f"ERRO: visual.json ja existe: {vpath}", file=sys.stderr)
         sys.exit(1)
 
-    spec_path = Path(args.spec)
+    if args.spec:
+        spec_path = Path(args.spec)
+    else:
+        nexus = _find_nexus_root()
+        if nexus is None:
+            print("ERRO: --spec nao fornecido e .nexus/ nao encontrado.", file=sys.stderr)
+            sys.exit(1)
+        spec_path = nexus / "spec.json"
     _check_pipeline_order(spec_path)
 
     with open(spec_path, "r", encoding="utf-8") as f:
@@ -353,8 +364,13 @@ def cmd_validate(vpath: Path, args: argparse.Namespace) -> None:
         if not screen.get("uc_refs"):
             errors.append(f"Screen '{sid}' sem uc_refs")
 
-    if args.spec:
-        spec_path = Path(args.spec)
+    spec_arg = args.spec
+    if not spec_arg:
+        nexus = _find_nexus_root()
+        if nexus:
+            spec_arg = str(nexus / "spec.json")
+    if spec_arg:
+        spec_path = Path(spec_arg)
         if spec_path.exists():
             with open(spec_path, "r", encoding="utf-8") as f:
                 spec = json.load(f)
@@ -392,7 +408,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="action", required=True)
 
     s = sub.add_parser("init", help="Criar visual.json a partir de spec.json")
-    s.add_argument("--spec", required=True, help="Caminho do spec.json")
+    s.add_argument("--spec", default="", help="Caminho do spec.json (auto-descobre se omitido)")
 
     s = sub.add_parser("context", help="Exibir contexto de UCs para wireframe")
     s.add_argument("--screen", default="", help="Filtrar por screen ID (mostra UCs referenciados)")
@@ -431,7 +447,28 @@ _ACTIONS = {
 }
 
 
+def _find_nexus_root() -> "Path | None":
+    """Walk up from CWD to find .nexus/ directory."""
+    current = Path.cwd()
+    while True:
+        candidate = current / ".nexus"
+        if candidate.is_dir():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in _ACTIONS:
+        nexus = _find_nexus_root()
+        if nexus is None:
+            print("ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.", file=sys.stderr)
+            sys.exit(1)
+        sys.argv.insert(1, str(nexus / "visual.json"))
+
     parser = _build_parser()
     args = parser.parse_args()
     vpath = Path(args.visual_path)

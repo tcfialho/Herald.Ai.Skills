@@ -15,7 +15,7 @@ Pipeline: /plan → /proto (opcional) → /dev → /review
 **Dependência obrigatória:** `/plan` concluído (`spec.json` validado com ≥5 EARS, UCs e drill-downs 1:1)
 
 Antes de executar `backlog.py init`:
-1. Verifique se `.nexus/{plan_name}/spec.json` existe
+1. Verifique se `.nexus/spec.json` existe
 2. Verifique se o spec foi validado (`spec_builder.py validate` passa)
 
 **Se `spec.json` não existir:** HALT — informe ao usuário:
@@ -76,24 +76,33 @@ O `backlog.json` é a **única fonte de verdade** durante `/dev`. Contém: stori
 ## PRÉ-CONDIÇÃO OBRIGATÓRIA
 
 Antes de iniciar qualquer código:
-1. Verifique que `.nexus/{plan_name}/spec.json` existe (produzido por `/plan`)
-2. Crie o backlog a partir do spec:
+1. Verifique que `.nexus/spec.json` existe (produzido por `/plan`)
+2. Resolva o estado da run:
 ```bash
-python scripts/backlog.py {project_root}/.nexus/{plan_name}/backlog.json init --spec {project_root}/.nexus/{plan_name}/spec.json
+python scripts/spec_builder.py next-run
 ```
-> Se `visual.json` existir no mesmo diretório do spec.json, o backlog importa as screens automaticamente.
-3. Se `backlog.json` já existir (sessão retomada), use `recovery`:
+> Se retornar `NEXT_RUN` → crie o backlog. Se retornar `ACTIVE_RUN` → sessão retomada, use `recovery`.
+
+3. Crie o backlog na nova run (auto-descobre o próximo slot em `.nexus/runs/`):
 ```bash
-python scripts/backlog.py {backlog} recovery
+python scripts/backlog.py init
+```
+> Se `visual.json` existir em `.nexus/`, o backlog importa as screens automaticamente.
+
+4. Se a run já existir (sessão retomada), use `recovery`:
+```bash
+python scripts/backlog.py recovery
 ```
 
-> `{backlog}` é atalho para `{project_root}/.nexus/{plan_name}/backlog.json` nos exemplos a seguir.
+> **Nota:** Todos os scripts auto-descobrem `.nexus/` a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.
 
 ---
 
 ## FLUXO OBRIGATÓRIO (execute em ordem, SEM pausar)
 
 ### Passo 1 — Feature Branch Setup
+
+O `{plan_name}` é extraído do campo `plan_name` dentro de `.nexus/spec.json` (metadata, não pasta).
 
 ```bash
 git fetch origin
@@ -107,28 +116,36 @@ git checkout -b feature/{plan_name}
 Leia o spec.json (via contexto mental do `/plan`) e gere **Histórias de Usuário** a partir dos fluxos.
 Cada fluxo de cada UC (principal + alternativos) produz **exatamente uma história**.
 
+**Regra de Filtragem por Origin (DELTA-ONLY):**
+> O backlog de uma run contém **apenas o delta** — trabalho NOVO a ser implementado.
+> UCs com `origin: "inferred"` (inferidos de código já existente pelo `/plan` Cenário B) são **excluídos** da geração de stories. Somente UCs com `origin: "new"` (default) geram stories e tasks.
+>
+> O comando `backlog.py show` exibe o breakdown `new` vs `inferred` para confirmação.
+> O comando `backlog.py add-story` emite AVISO se a IA tentar registrar story para UC inferred.
+
 **Regras de geração:**
-1. **1 Fluxo = 1 História.** UC-01 com fluxo principal + 2 alternativos → 3 histórias.
-2. **ID derivado do UC:** `US-UC01-FP` (fluxo principal), `US-UC01-FA1` (alternativo 1), etc.
-3. **Critérios de Aceitação em Gherkin:** Cada história DEVE ter ao menos 1 critério.
+1. **Somente UCs `origin: "new"`.** UCs inferred existem no spec para contexto documental, não para implementação.
+2. **1 Fluxo = 1 História.** UC-01 com fluxo principal + 2 alternativos → 3 histórias.
+3. **ID derivado do UC:** `US-UC01-FP` (fluxo principal), `US-UC01-FA1` (alternativo 1), etc.
+4. **Critérios de Aceitação em Gherkin:** Cada história DEVE ter ao menos 1 critério.
 
 Registre cada história e seus critérios via `backlog.py`:
 ```bash
-python scripts/backlog.py {backlog} add-story --id US-UC01-FP --uc-ref UC-01 --fluxo-id UC-01.FP --descricao "Criar tarefa com titulo e prioridade"
+python scripts/backlog.py add-story --id US-UC01-FP --uc-ref UC-01 --fluxo-id UC-01.FP --descricao "Criar tarefa com titulo e prioridade"
 
-python scripts/backlog.py {backlog} add-criterio --story US-UC01-FP --dado "usuario na tela de lista" --quando "preenche titulo e clica Criar" --entao "tarefa aparece na lista com status pendente"
+python scripts/backlog.py add-criterio --story US-UC01-FP --dado "usuario na tela de lista" --quando "preenche titulo e clica Criar" --entao "tarefa aparece na lista com status pendente"
 ```
 
 **OBRIGAÇÃO DE EXIBIÇÃO:** Após registrar todas as histórias:
 ```bash
-python scripts/backlog.py {backlog} show
+python scripts/backlog.py show
 ```
 
 ### Passo 3 — Task Queue Generation (Histórias → Tasks Atômicas)
 
 Para cada história, quebre em tasks atômicas e registre via `backlog.py`:
 ```bash
-python scripts/backlog.py {backlog} add-task --story-ref US-UC01-FP --id TASK-001 --title "Criar schema da tabela Tarefa" --tipo "Dados" --nivel 0 --objetivo "Criar migration com tabela tarefas" --pre-condicao "Nenhuma" --pos-condicao "Tabela tarefas existe no banco" --diretiva "Integracao" --verify-cmd "python -m pytest tests/test_schema.py -x -q" --files "src/migrations/001.sql" "tests/test_schema.py" --ears-refs "REQ-01"
+python scripts/backlog.py add-task --story-ref US-UC01-FP --id TASK-001 --title "Criar schema da tabela Tarefa" --tipo "Dados" --nivel 0 --objetivo "Criar migration com tabela tarefas" --pre-condicao "Nenhuma" --pos-condicao "Tabela tarefas existe no banco" --diretiva "Integracao" --verify-cmd "python -m pytest tests/test_schema.py -x -q" --files "src/migrations/001.sql" "tests/test_schema.py" --ears-refs "REQ-01"
 ```
 
 **Regras de Fatiamento por Camada Técnica:**
@@ -150,7 +167,7 @@ python scripts/backlog.py {backlog} add-task --story-ref US-UC01-FP --id TASK-00
 
 Use `--dependencies` para declarar dependências:
 ```bash
-python scripts/backlog.py {backlog} add-task --story-ref US-UC01-FP --id TASK-003 ... --dependencies TASK-001 TASK-002
+python scripts/backlog.py add-task --story-ref US-UC01-FP --id TASK-003 ... --dependencies TASK-001 TASK-002
 ```
 
 **Regra do "Zero Mocks" (Pré-condições Físicas):**
@@ -175,8 +192,8 @@ A Pré-condição de uma Task **nunca é simulada**. Se a Task da API depende do
 
 **Validação e exibição obrigatória após registrar todas as tasks:**
 ```bash
-python scripts/backlog.py {backlog} validate
-python scripts/backlog.py {backlog} progress
+python scripts/backlog.py validate
+python scripts/backlog.py progress
 ```
 
 ### Passo 4 — Anti-Interruption Execution Loop
@@ -187,13 +204,13 @@ Para cada iteração:
 
 ```
 1. Obter próxima task (respeita dependências automaticamente):
-   python scripts/backlog.py {backlog} next
+   python scripts/backlog.py next
 
 2. Marcar como in_progress:
-   python scripts/backlog.py {backlog} start TASK-XXX
+   python scripts/backlog.py start TASK-XXX
 
 3. Exibir progresso no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
-   python scripts/backlog.py {backlog} progress
+   python scripts/backlog.py progress
    → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 
 4. IMPLEMENTAR A TASK:
@@ -208,10 +225,9 @@ Para cada iteração:
    PASSO D — Resolução de dependências no ambiente real
 
 6. Completar a task (claims explícitas + auditoria automática):
-   python scripts/backlog.py {backlog} complete TASK-XXX \
+   python scripts/backlog.py complete TASK-XXX \
      --test-files tests/test_schema.py tests/test_api.py \
-     --test-passed 3 --test-failed 0 \
-     --project-root {project_root}
+     --test-passed 3 --test-failed 0
    
    A IA declara os resultados via argumentos. O script audita:
      GATE 1 — task.files existem no disco
@@ -224,13 +240,13 @@ Para cada iteração:
    SE CIRCUIT BREAKER (3 falhas): HALT e peça ajuda ao usuário.
    
    Para registrar falha explicitamente:
-   python scripts/backlog.py {backlog} fail TASK-XXX --error "descricao do erro"
+   python scripts/backlog.py fail TASK-XXX --error "descricao do erro"
 
 7. Micro-commit atômico (somente se complete aceito):
    git add -A && git commit -m "feat(scope): descricao"
 
 8. Exibir progresso atualizado no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
-   python scripts/backlog.py {backlog} progress
+   python scripts/backlog.py progress
    → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 ```
 
@@ -257,7 +273,7 @@ Se o bloco de progresso não aparece na resposta de chat, o usuário não tem fe
 1. **LEIA** a mensagem completa de rejeição (gate + detalhe)
 2. **DIAGNOSTIQUE** — inspecione o arquivo/linha citado ou releia o contexto:
    ```bash
-   python scripts/backlog.py {backlog} context --task TASK-XXX
+   python scripts/backlog.py context --task TASK-XXX
    ```
 3. **CORRIJA** o problema específico (veja tabela abaixo)
 4. **VERIFIQUE LOCALMENTE** (build + testes passando) ANTES de re-submeter
@@ -333,10 +349,9 @@ python -m pytest tests/test_schema.py -x -q
 # 2. IA anota: 3 passed, 0 failed
 
 # 3. IA chama complete com as claims
-python scripts/backlog.py {backlog} complete TASK-001 \
+python scripts/backlog.py complete TASK-001 \
   --test-files tests/test_schema.py \
-  --test-passed 3 --test-failed 0 \
-  --project-root {project_root}
+  --test-passed 3 --test-failed 0
 ```
 
 Comandos de teste por stack:
@@ -361,7 +376,7 @@ Se falhar: **corrija antes de completar. Nunca reporte `--test-failed > 0`.**
 
 Quando `backlog.py complete` da última task imprimir "PLANO COMPLETO":
 ```bash
-python scripts/backlog.py {backlog} progress    # exibição final
+python scripts/backlog.py progress    # exibição final
 git push origin feature/{plan_name}
 ```
 
@@ -374,15 +389,17 @@ Informe ao usuário:
 ## ARTEFATOS PRODUZIDOS
 
 ```
-.nexus/{plan_name}/
+.nexus/
 ├── spec.json               ← Plano original (NÃO modificado pelo /dev)
 ├── spec.md                 ← Visualização do plano
 ├── visual.json             ← Decisões visuais (opcional, produzido pelo /proto)
-├── backlog.json            ← Fonte de verdade da execução (contexto = spec + visual merged)
-└── evidence/               ← Gerado automaticamente pelo complete
-    ├── TASK-001.json        ← Claims da IA + audit do script + resultado
-    ├── TASK-002.json
-    └── ...
+└── runs/
+    └── {run}/              ← Execução desta rodada (ex: 001)
+        ├── backlog.json    ← Fonte de verdade da execução (contexto = spec + visual merged)
+        └── evidence/       ← Gerado automaticamente pelo complete
+            ├── TASK-001.json
+            ├── TASK-002.json
+            └── ...
 ```
 
 ---
@@ -404,7 +421,7 @@ O `/dev` está COMPLETO quando:
 
 Se a sessão for interrompida, ao reiniciar:
 ```bash
-python scripts/backlog.py {backlog} recovery
+python scripts/backlog.py recovery
 ```
 
 O output contém:
@@ -421,11 +438,11 @@ Retome a partir da próxima task pendente SEM repetir tasks completas.
 
 ```bash
 # Contexto completo de uma task específica
-python scripts/backlog.py {backlog} context --task TASK-005
+python scripts/backlog.py context --task TASK-005
 
 # Contexto de uma história com todas as suas tasks
-python scripts/backlog.py {backlog} context --story US-UC01-FP
+python scripts/backlog.py context --story US-UC01-FP
 
 # Resumo geral do backlog
-python scripts/backlog.py {backlog} show
+python scripts/backlog.py show
 ```

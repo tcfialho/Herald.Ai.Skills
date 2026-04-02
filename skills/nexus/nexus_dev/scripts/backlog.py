@@ -34,12 +34,12 @@ Subcommands:
     validate      Check backlog completeness
 
 Usage:
-  python backlog.py .nexus/plan/backlog.json init --spec .nexus/plan/spec.json
-  python backlog.py .nexus/plan/backlog.json add-story --id US-UC01-FP --uc-ref UC-01 ...
-  python backlog.py .nexus/plan/backlog.json next
-  python backlog.py .nexus/plan/backlog.json start TASK-001
-  python backlog.py .nexus/plan/backlog.json complete TASK-001
-  python backlog.py .nexus/plan/backlog.json progress
+  python backlog.py .nexus/runs/001/backlog.json init --spec .nexus/spec.json
+  python backlog.py .nexus/runs/001/backlog.json add-story --id US-UC01-FP --uc-ref UC-01 ...
+  python backlog.py .nexus/runs/001/backlog.json next
+  python backlog.py .nexus/runs/001/backlog.json start TASK-001
+  python backlog.py .nexus/runs/001/backlog.json complete TASK-001
+  python backlog.py .nexus/runs/001/backlog.json progress
 """
 
 from __future__ import annotations
@@ -312,7 +312,14 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
         print(f"ERRO: backlog.json ja existe: {bl_path}", file=sys.stderr)
         sys.exit(1)
 
-    spec_path = Path(args.spec)
+    if args.spec:
+        spec_path = Path(args.spec)
+    else:
+        nexus = _find_nexus_root()
+        if nexus is None:
+            print("ERRO: --spec nao fornecido e .nexus/ nao encontrado.", file=sys.stderr)
+            sys.exit(1)
+        spec_path = nexus / "spec.json"
     _check_pipeline_order(spec_path)
 
     with open(spec_path, "r", encoding="utf-8") as f:
@@ -325,6 +332,10 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
     entity_index = {}
     for ent in spec.get("entities", []):
         entity_index[ent["name"]] = ent["definition"]
+
+    uc_origins = {}
+    for uc in spec.get("use_cases", []):
+        uc_origins[uc["id"]] = uc.get("origin", "new")
 
     screens_index: dict[str, list[dict]] = {}
     visual_path = spec_path.parent / "visual.json"
@@ -358,6 +369,7 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
             "entity_index": entity_index,
             "invariants": spec.get("invariants", []),
             "screens": screens_index,
+            "uc_origins": uc_origins,
         },
         "stories": [],
         "execution": {
@@ -374,8 +386,14 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
     decs = len(data["context"]["decisions"])
     ents = len(entity_index)
     scr = sum(len(v) for v in screens_index.values())
+    new_ucs = sum(1 for v in uc_origins.values() if v == "new")
+    inferred_ucs = sum(1 for v in uc_origins.values() if v == "inferred")
     print(f"OK backlog.json criado: {bl_path}")
     print(f"   Plano: {plan} | Contexto: {decs} decisoes, {ears} EARS, {ents} entidades")
+    if inferred_ucs > 0:
+        print(f"   UCs: {new_ucs} new (gerarao stories), {inferred_ucs} inferred (somente contexto)")
+    else:
+        print(f"   UCs: {new_ucs} new")
     if screens_index:
         ucs_with_screens = len(screens_index)
         print(f"   Visual: {scr} screen-refs em {ucs_with_screens} UCs")
@@ -383,6 +401,14 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
 
 def cmd_add_story(bl_path: Path, args: argparse.Namespace) -> None:
     data = _load(bl_path)
+    uc_origins = data.get("context", {}).get("uc_origins", {})
+    uc_origin = uc_origins.get(args.uc_ref, "new")
+    if uc_origin == "inferred":
+        print(
+            f"AVISO: UC '{args.uc_ref}' tem origin=inferred (codigo ja existente). "
+            f"Stories devem ser geradas apenas para UCs com origin=new.",
+            file=sys.stderr,
+        )
     existing = _find_story(data, args.id)
     if existing:
         existing["uc_ref"] = args.uc_ref
@@ -500,7 +526,7 @@ def cmd_start(bl_path: Path, args: argparse.Namespace) -> None:
 
 
 def _save_evidence(bl_path: Path, task_id: str, evidence: dict) -> Path:
-    """Write evidence JSON to .nexus/{plan}/evidence/{task_id}.json."""
+    """Write evidence JSON to .nexus/runs/{run}/evidence/{task_id}.json."""
     evidence_dir = bl_path.parent / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     evidence_path = evidence_dir / f"{task_id}.json"
@@ -519,7 +545,11 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
         print(f"Task '{args.task_id}' ja esta completed.")
         return
 
-    project_root = Path(args.project_root) if args.project_root else bl_path.parent.parent.parent
+    if args.project_root:
+        project_root = Path(args.project_root)
+    else:
+        nexus = _find_nexus_root()
+        project_root = nexus.parent if nexus else bl_path.parent.parent.parent.parent
     claimed_test_files = args.test_files or []
     claimed_passed = args.test_passed
     claimed_failed = args.test_failed
@@ -952,7 +982,12 @@ def cmd_show(bl_path: Path, _args: argparse.Namespace) -> None:
     decs = len(ctx.get("decisions", []))
     ears = len(ctx.get("ears_index", {}))
     ents = len(ctx.get("entity_index", {}))
+    uc_origins = ctx.get("uc_origins", {})
+    new_ucs = sum(1 for v in uc_origins.values() if v == "new")
+    inferred_ucs = sum(1 for v in uc_origins.values() if v == "inferred")
     print(f"   Contexto: {decs} decisoes | {ears} EARS | {ents} entidades")
+    if inferred_ucs > 0:
+        print(f"   UCs: {new_ucs} new, {inferred_ucs} inferred (stories geradas somente para new)")
 
 
 def cmd_validate(bl_path: Path, _args: argparse.Namespace) -> None:
@@ -1012,7 +1047,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # init
     s = sub.add_parser("init", help="Criar backlog.json a partir de spec.json")
-    s.add_argument("--spec", required=True, help="Caminho do spec.json finalizado")
+    s.add_argument("--spec", default="", help="Caminho do spec.json (auto-descobre .nexus/spec.json se omitido)")
 
     # add-story
     s = sub.add_parser("add-story", help="Registrar historia de usuario")
@@ -1102,7 +1137,90 @@ _ACTIONS = {
 }
 
 
+def _find_nexus_root() -> "Path | None":
+    """Walk up from CWD to find .nexus/ directory."""
+    current = Path.cwd()
+    while True:
+        candidate = current / ".nexus"
+        if candidate.is_dir():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def _run_is_fully_closed(run_dir: Path) -> bool:
+    review_path = run_dir / "review.json"
+    if not review_path.exists():
+        return False
+    with open(review_path, "r", encoding="utf-8") as f:
+        review = json.load(f)
+    return review.get("verdict") == "APPROVED"
+
+
+def _resolve_active_run(nexus_root: Path) -> "Path | None":
+    """Find the latest run directory that has a backlog.json."""
+    runs_dir = nexus_root / "runs"
+    if not runs_dir.exists():
+        return None
+    for d in sorted(
+        (x for x in runs_dir.iterdir() if x.is_dir() and x.name.isdigit()),
+        key=lambda x: int(x.name),
+        reverse=True,
+    ):
+        if (d / "backlog.json").exists():
+            return d
+    return None
+
+
+def _resolve_next_run(nexus_root: Path) -> Path:
+    """Find the next available run directory for a new backlog.
+    Exits with error if there is an active (non-closed) run."""
+    runs_dir = nexus_root / "runs"
+    if not runs_dir.exists():
+        return runs_dir / "001"
+
+    existing = sorted(
+        (d for d in runs_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+        key=lambda d: int(d.name),
+    )
+    if not existing:
+        return runs_dir / "001"
+
+    for run_dir in reversed(existing):
+        bl_path = run_dir / "backlog.json"
+        if not bl_path.exists():
+            continue
+        with open(bl_path, "r", encoding="utf-8") as f:
+            backlog = json.load(f)
+        status = backlog.get("status", "building")
+        if status == "completed" and _run_is_fully_closed(run_dir):
+            next_num = int(run_dir.name) + 1
+            return runs_dir / f"{next_num:03d}"
+        print(f"ERRO: run ativa em {run_dir.name} — complete /dev e /review antes de iniciar nova run.", file=sys.stderr)
+        sys.exit(1)
+
+    max_num = int(existing[-1].name)
+    return runs_dir / f"{max_num + 1:03d}"
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in _ACTIONS:
+        nexus = _find_nexus_root()
+        if nexus is None:
+            print("ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.", file=sys.stderr)
+            sys.exit(1)
+        if sys.argv[1] == "init":
+            run_dir = _resolve_next_run(nexus)
+        else:
+            run_dir = _resolve_active_run(nexus)
+            if run_dir is None:
+                print("ERRO: nenhuma run com backlog encontrada em .nexus/runs/.", file=sys.stderr)
+                sys.exit(1)
+        sys.argv.insert(1, str(run_dir / "backlog.json"))
+
     parser = _build_parser()
     args = parser.parse_args()
     bl_path = Path(args.backlog_path)

@@ -59,6 +59,8 @@ TYPE_TO_CATEGORY = {
 
 SEVERITY_ORDER = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2, "MINOR": 3, "INFO": 4}
 
+HOTSPOT_PROBABILITY_TO_SEVERITY = {"HIGH": "CRITICAL", "MEDIUM": "MAJOR", "LOW": "MINOR"}
+
 
 # ──────────────────────────────────────────────
 # Common utilities
@@ -482,6 +484,78 @@ def fetch_issues(project_key, branch, token, file_path=None):
     return normalized, total, None
 
 
+def _resolve_hotspot_files_param(project_key, file_path):
+    """Build the Sonar-internal file path for the hotspots/search `files` param."""
+    repo_name = _repo_name_from_key(project_key)
+    if file_path.startswith(f"{repo_name}/"):
+        return file_path
+    return f"{repo_name}/{file_path}"
+
+
+def fetch_hotspots(project_key, branch, token, file_path=None):
+    """Fetch all open security hotspots via the dedicated hotspots/search API."""
+    all_hotspots = []
+    page = 1
+    page_size = 500
+    max_results = 2000
+
+    while True:
+        params = {
+            "projectKey": project_key,
+            "status": "TO_REVIEW",
+            "p": page,
+            "ps": page_size,
+        }
+        if branch:
+            params["branch"] = branch
+        if file_path:
+            params["files"] = _resolve_hotspot_files_param(project_key, file_path)
+
+        data, api_err = api_get("hotspots/search", params, token)
+
+        if api_err and api_err["code"] == 404 and branch:
+            sys.stderr.write(f"Branch '{branch}' nao encontrada para hotspots, usando default\n")
+            params.pop("branch", None)
+            data, api_err = api_get("hotspots/search", params, token)
+
+        if api_err:
+            return None, 0, f"hotspots/search: HTTP {api_err['code']}: {api_err['message']}"
+
+        paging = data.get("paging", {})
+        fetched = data.get("hotspots", [])
+        if not fetched:
+            break
+
+        all_hotspots.extend(fetched)
+        api_total = paging.get("total", 0)
+        if len(all_hotspots) >= api_total or len(all_hotspots) >= max_results:
+            break
+        page += 1
+
+    normalized = []
+    for raw in all_hotspots:
+        component_path = (raw.get("component") or "").split(":", 1)[-1]
+        norm_file = strip_project_prefix(component_path, project_key)
+
+        prob = raw.get("vulnerabilityProbability", "MEDIUM")
+        normalized.append({
+            "issueKey": raw.get("key"),
+            "rule": raw.get("ruleKey"),
+            "file": norm_file,
+            "line": raw.get("line"),
+            "message": raw.get("message"),
+            "severity": HOTSPOT_PROBABILITY_TO_SEVERITY.get(prob, "MAJOR"),
+            "type": "SECURITY_HOTSPOT",
+            "effort": None,
+            "category": "Security",
+            "textRange": raw.get("textRange"),
+            "securityCategory": raw.get("securityCategory"),
+            "vulnerabilityProbability": prob,
+        })
+
+    return normalized, len(normalized), None
+
+
 def build_grouped_output(issues, total):
     """Format B: grouped by category > rule, sorted by severity."""
     groups = {}
@@ -560,6 +634,13 @@ def build_file_output(issues, total, target_file):
     }
 
 
+def _should_include_hotspots(target_category):
+    """Hotspots are included when no category filter or category is 'security'."""
+    if not target_category:
+        return True
+    return target_category.lower() == "security"
+
+
 def cmd_issues(opts):
     token, project_key, branch, _, err = resolve_context(opts)
     if err:
@@ -578,6 +659,17 @@ def cmd_issues(opts):
     if fetch_err:
         fail("FETCH_FAILED", fetch_err)
 
+    if _should_include_hotspots(target_category):
+        hotspots, hotspot_total, hs_err = fetch_hotspots(
+            project_key, branch, token, file_path=target_file,
+        )
+        if hs_err:
+            sys.stderr.write(f"Warning: hotspots fetch failed: {hs_err}\n")
+        elif hotspots:
+            sys.stderr.write(f"Fetched {len(hotspots)} security hotspots\n")
+            issues.extend(hotspots)
+            total += hotspot_total
+
     if target_file:
         issue_keys = [i["issueKey"] for i in issues if i.get("issueKey")]
         if issue_keys:
@@ -587,7 +679,7 @@ def cmd_issues(opts):
                 key = issue.get("issueKey")
                 if key and key in snippets:
                     issue["snippet"] = snippets[key]
-        result = build_file_output(issues, total, target_file)
+        result = build_file_output(issues, len(issues), target_file)
     else:
         if target_category:
             cat_map = {
@@ -599,7 +691,7 @@ def cmd_issues(opts):
             if cat_label:
                 issues = [i for i in issues if i["category"] == cat_label]
 
-        result = build_grouped_output(issues, total)
+        result = build_grouped_output(issues, len(issues))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -618,6 +710,14 @@ def cmd_files(opts):
     issues, total, fetch_err = fetch_issues(project_key, branch, token)
     if fetch_err:
         fail("FETCH_FAILED", fetch_err)
+
+    hotspots, hotspot_total, hs_err = fetch_hotspots(project_key, branch, token)
+    if hs_err:
+        sys.stderr.write(f"Warning: hotspots fetch failed: {hs_err}\n")
+    elif hotspots:
+        sys.stderr.write(f"Fetched {len(hotspots)} security hotspots for file ranking\n")
+        issues.extend(hotspots)
+        total += hotspot_total
 
     file_stats = {}
     for issue in issues:
@@ -647,6 +747,28 @@ def cmd_files(opts):
 # ──────────────────────────────────────────────
 # Subcommand: rule
 # ──────────────────────────────────────────────
+
+def _parse_description_sections(raw_sections):
+    """Parse descriptionSections into a structured dict.
+
+    Sections without context are stored as plain strings.
+    Sections with context (e.g. how_to_fix for NUnit/xUnit/MSTest)
+    are stored as a dict keyed by the context displayName.
+    """
+    result = {}
+    for sec in raw_sections:
+        key = sec.get("key", "unknown")
+        content = strip_html_tags(sec.get("content") or "").strip()
+        context = (sec.get("context") or {}).get("displayName", "")
+
+        if not context:
+            result[key] = content
+        else:
+            if key not in result or isinstance(result[key], str):
+                result[key] = {}
+            result[key][context] = content
+
+    return result
 
 def cmd_rule(opts):
     rule_key = opts.get("key")
@@ -683,6 +805,7 @@ def cmd_rule(opts):
         "lang": r.get("lang"),
         "langName": r.get("langName"),
         "description": r.get("mdDesc") or r.get("htmlDesc") or r.get("description"),
+        "sections": _parse_description_sections(r.get("descriptionSections") or []),
     }
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

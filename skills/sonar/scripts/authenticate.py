@@ -37,7 +37,7 @@ LOGGED_IN_PATTERNS = [
 
 
 def load_token():
-    for var in ("SONAR_TOKEN", "SONARCLOUD_TOKEN"):
+    for var in ("SONAR_TOKEN", "SONARCLOUD_TOKEN", "SONAR_CLOUD"):
         token = os.environ.get(var, "").strip()
         if token:
             return token, "env"

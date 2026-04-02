@@ -314,6 +314,8 @@ Every issue must be fixed at the root. If a fix is genuinely not possible (e.g.,
 
 ## Display Templates
 
+**MANDATORY OUTPUT FORMAT (HARD RULE):** The templates below define the **exact** structure, wording, and emoji usage for every output shown to the user. You MUST follow them **literally** — including all emojis (📊, 📋, 🔒, 🔥, 🛡️, 🔧, 🟢, 🟡, 🟠, 🔴, ⛔, ✅, ⚠️, ❌, 📄, 🔨, 🧪), the markdown table layout, and the heading hierarchy. Do NOT omit emojis, do NOT rephrase headings, do NOT invent alternative formats. If the template says `## 📊 SonarCloud Health`, you output `## 📊 SonarCloud Health` — not `## SonarCloud Health`, not `## Health Dashboard`, not any other variation. Failure to reproduce the template exactly (including emojis and structure) is a violation of this skill's contract.
+
 ### Health Display Template
 
 Rating emoji mapping: A → `🟢`, B → `🟡`, C → `🟠`, D → `🔴`, E → `⛔`
@@ -399,7 +401,8 @@ Show top 5 files. The `severity_breakdown` is a compact inline string like `2 ma
 ### Token Sources (priority order)
 
 1. `SONAR_TOKEN` or `SONARCLOUD_TOKEN` environment variable
-2. `~/.sonarcloud/token` file (created by browser login)
+2. `SONAR_CLOUD` environment variable (machine-level)
+3. `~/.sonarcloud/token` file (created by browser login)
 
 ### Organization
 

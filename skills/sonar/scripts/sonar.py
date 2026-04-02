@@ -26,10 +26,12 @@ Output: JSON to stdout. Diagnostic messages go to stderr.
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from html import unescape as html_unescape
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -63,7 +65,7 @@ SEVERITY_ORDER = {"BLOCKER": 0, "CRITICAL": 1, "MAJOR": 2, "MINOR": 3, "INFO": 4
 # ──────────────────────────────────────────────
 
 def load_token():
-    for var in ("SONAR_TOKEN", "SONARCLOUD_TOKEN"):
+    for var in ("SONAR_TOKEN", "SONARCLOUD_TOKEN", "SONAR_CLOUD"):
         token = os.environ.get(var, "").strip()
         if token:
             return token
@@ -210,6 +212,113 @@ def fail(error_code, message=None):
 
 
 # ──────────────────────────────────────────────
+# Path normalization & enrichment
+# ──────────────────────────────────────────────
+
+def strip_html_tags(html_code):
+    """Strip HTML tags and unescape entities to produce plain source code."""
+    if not html_code:
+        return ""
+    return html_unescape(re.sub(r"<[^>]+>", "", html_code))
+
+
+def _repo_name_from_key(project_key):
+    """Extract the repository name from a Sonar project key (handles org_repo)."""
+    return project_key.rsplit("_", 1)[-1] if "_" in project_key else project_key
+
+
+def strip_project_prefix(component_path, project_key):
+    """Remove the Sonar-internal repo-name prefix so paths match the workspace.
+
+    e.g. 'quality-hub-mcp/src/server.ts' -> 'src/server.ts'
+    """
+    prefix = f"{_repo_name_from_key(project_key)}/"
+    if component_path.startswith(prefix):
+        return component_path[len(prefix):]
+    return component_path
+
+
+def resolve_file_component_key(project_key, file_path, branch, token):
+    """Resolve the correct Sonar component key for a workspace file path.
+
+    The Sonar component key often includes an internal prefix
+    (e.g. 'repo-name/src/...'). This function queries components/tree
+    to find the exact key, falling back to heuristic prefixing.
+    """
+    basename = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
+    params = {
+        "component": project_key,
+        "qualifiers": "FIL",
+        "q": basename,
+        "ps": 50,
+    }
+    if branch:
+        params["branch"] = branch
+
+    tree_data, tree_err = api_get("components/tree", params, token)
+
+    if not tree_err and tree_data:
+        for comp in tree_data.get("components", []):
+            comp_key = comp.get("key", "")
+            comp_path = comp_key.split(":", 1)[-1] if ":" in comp_key else ""
+            if comp_path == file_path or comp_path.endswith(f"/{file_path}"):
+                return comp_key
+
+    repo_name = _repo_name_from_key(project_key)
+    if not file_path.startswith(f"{repo_name}/"):
+        return f"{project_key}:{repo_name}/{file_path}"
+    return f"{project_key}:{file_path}"
+
+
+def fetch_issue_snippets(issue_keys, token):
+    """Fetch code snippets for a list of issue keys (sources/issue_snippets).
+
+    Returns dict: {issue_key: {startLine, endLine, lines: [{line, code}]}}
+    """
+    snippets = {}
+    for issue_key in issue_keys:
+        data, err = api_get("sources/issue_snippets", {"issueKey": issue_key}, token)
+        if err or not data:
+            continue
+        for _comp_key, comp_data in data.items():
+            sources = comp_data.get("sources", [])
+            if not sources:
+                continue
+            lines = [
+                {"line": s.get("line"), "code": strip_html_tags(s.get("code", ""))}
+                for s in sources
+            ]
+            snippets[issue_key] = {
+                "startLine": sources[0].get("line"),
+                "endLine": sources[-1].get("line"),
+                "lines": lines,
+            }
+            break
+    return snippets
+
+
+def normalize_flows(raw_flows, project_key):
+    """Normalize the flows/secondary-locations from the raw API response."""
+    if not raw_flows:
+        return []
+    normalized = []
+    for flow in raw_flows:
+        locations = flow.get("locations", [])
+        if not locations:
+            continue
+        norm_locs = []
+        for loc in locations:
+            comp = (loc.get("component") or "").split(":", 1)[-1]
+            norm_locs.append({
+                "file": strip_project_prefix(comp, project_key),
+                "textRange": loc.get("textRange"),
+                "message": loc.get("msg"),
+            })
+        normalized.append(norm_locs)
+    return normalized
+
+
+# ──────────────────────────────────────────────
 # Subcommand: health
 # ──────────────────────────────────────────────
 
@@ -313,7 +422,10 @@ def fetch_issues(project_key, branch, token, file_path=None):
     max_results = 2000
     total = 0
 
-    component_key = f"{project_key}:{file_path}" if file_path else project_key
+    if file_path:
+        component_key = resolve_file_component_key(project_key, file_path, branch, token)
+    else:
+        component_key = project_key
 
     while True:
         params = {
@@ -349,16 +461,23 @@ def fetch_issues(project_key, branch, token, file_path=None):
     normalized = []
     for raw in all_issues:
         component_path = (raw.get("component") or "").split(":", 1)[-1]
-        normalized.append({
+        raw_flows = raw.get("flows", [])
+        entry = {
+            "issueKey": raw.get("key"),
             "rule": raw.get("rule"),
-            "file": component_path,
+            "file": strip_project_prefix(component_path, project_key),
             "line": raw.get("line"),
             "message": raw.get("message"),
             "severity": raw.get("severity"),
             "type": raw.get("type"),
             "effort": raw.get("effort"),
             "category": TYPE_TO_CATEGORY.get(raw.get("type"), "Maintainability"),
-        })
+            "textRange": raw.get("textRange"),
+        }
+        flows = normalize_flows(raw_flows, project_key)
+        if flows:
+            entry["flows"] = flows
+        normalized.append(entry)
 
     return normalized, total, None
 
@@ -383,12 +502,16 @@ def build_grouped_output(issues, total):
             }
         rule_group = groups[cat]["byRule"][rule]
         rule_group["count"] += 1
-        rule_group["issues"].append({
+        issue_entry = {
             "file": issue["file"],
             "line": issue["line"],
             "message": issue["message"],
             "effort": issue["effort"],
-        })
+            "textRange": issue.get("textRange"),
+        }
+        if issue.get("flows"):
+            issue_entry["flows"] = issue["flows"]
+        rule_group["issues"].append(issue_entry)
 
     for cat_data in groups.values():
         cat_data["byRule"] = dict(sorted(
@@ -412,22 +535,28 @@ def build_grouped_output(issues, total):
 def build_file_output(issues, total, target_file):
     """Format C: flat list for a specific file, sorted by line."""
     sorted_issues = sorted(issues, key=lambda i: (i.get("line") or 0))
+    result_issues = []
+    for i in sorted_issues:
+        entry = {
+            "rule": i["rule"],
+            "line": i["line"],
+            "message": i["message"],
+            "severity": i["severity"],
+            "type": i["type"],
+            "category": i["category"],
+            "effort": i["effort"],
+            "textRange": i.get("textRange"),
+        }
+        if i.get("flows"):
+            entry["flows"] = i["flows"]
+        if i.get("snippet"):
+            entry["snippet"] = i["snippet"]
+        result_issues.append(entry)
     return {
         "total": total,
         "file": target_file,
-        "issueCount": len(sorted_issues),
-        "issues": [
-            {
-                "rule": i["rule"],
-                "line": i["line"],
-                "message": i["message"],
-                "severity": i["severity"],
-                "type": i["type"],
-                "category": i["category"],
-                "effort": i["effort"],
-            }
-            for i in sorted_issues
-        ],
+        "issueCount": len(result_issues),
+        "issues": result_issues,
     }
 
 
@@ -450,6 +579,14 @@ def cmd_issues(opts):
         fail("FETCH_FAILED", fetch_err)
 
     if target_file:
+        issue_keys = [i["issueKey"] for i in issues if i.get("issueKey")]
+        if issue_keys:
+            sys.stderr.write(f"Fetching snippets for {len(issue_keys)} issues...\n")
+            snippets = fetch_issue_snippets(issue_keys, token)
+            for issue in issues:
+                key = issue.get("issueKey")
+                if key and key in snippets:
+                    issue["snippet"] = snippets[key]
         result = build_file_output(issues, total, target_file)
     else:
         if target_category:

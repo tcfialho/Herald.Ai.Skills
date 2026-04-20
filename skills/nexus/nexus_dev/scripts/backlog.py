@@ -63,20 +63,105 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_backlog(data: dict) -> dict:
+    data.setdefault("nexus_version", "3.0")
+    data.setdefault("plan_ref", "")
+    data.setdefault("spec_path", "")
+    data.setdefault("feature_branch", "")
+    data.setdefault("created_at", _utcnow())
+    data.setdefault("updated_at", _utcnow())
+    data.setdefault("status", "building")
+    data.setdefault("stories", [])
+    data.setdefault("log", [])
+
+    context = data.setdefault("context", {})
+    context.setdefault("overview", "")
+    context.setdefault("decisions", [])
+    context.setdefault("ears_index", {})
+    context.setdefault("ears_detail_index", {})
+    context.setdefault("uc_ears_index", {})
+    context.setdefault("entity_index", {})
+    context.setdefault("invariants", [])
+    context.setdefault("screens", {})
+    context.setdefault("uc_origins", {})
+    context.setdefault("uc_index", {})
+    context.setdefault(
+        "architecture", {"principles": [], "components": [], "folders": []}
+    )
+    context.setdefault("dependencies", {"packages": [], "services": []})
+
+    execution = data.setdefault("execution", {})
+    execution.setdefault("current_task", None)
+    execution.setdefault("total_tasks", 0)
+    execution.setdefault("completed_tasks", 0)
+    execution.setdefault("failed_attempts", 0)
+
+    quality = data.setdefault("quality", {})
+    quality.setdefault("tests_status", "healthy")
+    quality.setdefault("blocked_reason", "")
+    quality.setdefault("updated_at", _utcnow())
+
+    return data
+
+
 def _load(path: Path) -> dict:
     if not path.exists():
         print(f"ERRO: backlog.json nao encontrado: {path}", file=sys.stderr)
         print("   Execute 'init' primeiro.", file=sys.stderr)
         sys.exit(1)
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return _normalize_backlog(json.load(f))
 
 
 def _save(path: Path, data: dict) -> None:
+    data = _normalize_backlog(data)
     data["updated_at"] = _utcnow()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _yaml_scalar(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _to_yaml_lines(value, indent: int = 0) -> list[str]:
+    space = " " * indent
+    if isinstance(value, dict):
+        if not value:
+            return [space + "{}"]
+        lines: list[str] = []
+        for key, item in value.items():
+            if isinstance(item, (dict, list)):
+                lines.append(f"{space}{key}:")
+                lines.extend(_to_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{space}{key}: {_yaml_scalar(item)}")
+        return lines
+
+    if isinstance(value, list):
+        if not value:
+            return [space + "[]"]
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{space}-")
+                lines.extend(_to_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{space}- {_yaml_scalar(item)}")
+        return lines
+
+    return [space + _yaml_scalar(value)]
+
+
+def _to_yaml(value) -> str:
+    return "\n".join(_to_yaml_lines(value))
 
 
 def _find_task(data: dict, task_id: str) -> tuple[Optional[dict], Optional[dict]]:
@@ -131,6 +216,151 @@ def _update_execution_counts(data: dict) -> None:
         "completed_tasks": completed,
         "failed_attempts": failed,
     }
+
+
+def _progress_snapshot(data: dict) -> dict:
+    ex = data.get("execution", {})
+    total = ex.get("total_tasks", 0)
+    completed = ex.get("completed_tasks", 0)
+    percent = int((completed / total) * 100) if total > 0 else 0
+    return {
+        "completed": completed,
+        "total": total,
+        "percent": percent,
+        "current_task": ex.get("current_task"),
+        "timestamp": _utcnow(),
+    }
+
+
+def _quality_gate_snapshot(data: dict) -> dict:
+    quality = data.get("quality", {})
+    status = quality.get("tests_status", "healthy")
+    blocked_reason = quality.get("blocked_reason", "")
+    return {
+        "tests_status": status,
+        "blocked": status in ("failing", "blocked"),
+        "blocked_reason": blocked_reason,
+        "updated_at": quality.get("updated_at"),
+    }
+
+
+def _set_tests_status(data: dict, status: str, blocked_reason: str = "") -> None:
+    quality = data.setdefault("quality", {})
+    quality["tests_status"] = status
+    quality["blocked_reason"] = blocked_reason
+    quality["updated_at"] = _utcnow()
+
+
+def _assert_delivery_unblocked(data: dict) -> None:
+    quality_gate = _quality_gate_snapshot(data)
+    if quality_gate["blocked"]:
+        reason = quality_gate.get("blocked_reason", "")
+        print(
+            "DELIVERY_BLOCKED: TESTS_FAILED — regularize os testes com 'backlog.py complete' antes de solicitar nova task.",
+            file=sys.stderr,
+        )
+        if reason:
+            print(f"   Motivo: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _build_story_payload(story: dict) -> dict:
+    return {
+        "id": story.get("id"),
+        "descricao": story.get("descricao", ""),
+        "uc_ref": story.get("uc_ref", ""),
+        "fluxo_id": story.get("fluxo_id", ""),
+        "criterios": story.get("criterios", []),
+    }
+
+
+def _build_task_payload(task: dict) -> dict:
+    return {
+        "id": task.get("id"),
+        "title": task.get("title", ""),
+        "tipo": task.get("tipo", ""),
+        "nivel": task.get("nivel", 0),
+        "status": task.get("status", "pending"),
+        "objetivo": task.get("objetivo", ""),
+        "pre_condicao": task.get("pre_condicao", []),
+        "pos_condicao": task.get("pos_condicao", []),
+        "files": task.get("files", []),
+        "dependencies": task.get("dependencies", []),
+        "diretiva_de_teste": task.get("diretiva_de_teste", ""),
+        "verify_cmd": task.get("verify_cmd", ""),
+        "ears_refs": task.get("ears_refs", []),
+    }
+
+
+def _build_ears_payload(data: dict, story: dict, task: dict | None) -> dict:
+    context = data.get("context", {})
+    detail_index = context.get("ears_detail_index", {})
+    uc_ears_index = context.get("uc_ears_index", {})
+    uc_ref = story.get("uc_ref", "")
+
+    task_refs = []
+    if task:
+        for ear_id in task.get("ears_refs", []):
+            detail = detail_index.get(ear_id)
+            if detail:
+                task_refs.append(detail)
+            else:
+                task_refs.append(
+                    {"id": ear_id, "uc_ref": uc_ref, "type": "", "notation": ""}
+                )
+
+    uc_refs = uc_ears_index.get(uc_ref, [])
+    return {
+        "task_refs": task_refs,
+        "use_case_refs": uc_refs,
+    }
+
+
+def _build_delivery_payload(
+    data: dict,
+    story: dict,
+    task: dict | None,
+    *,
+    command: str,
+    mode: str,
+) -> dict:
+    context = data.get("context", {})
+    uc_ref = story.get("uc_ref", "")
+    use_case = context.get("uc_index", {}).get(
+        uc_ref,
+        {
+            "id": uc_ref,
+            "name": "",
+            "description": "",
+            "origin": context.get("uc_origins", {}).get(uc_ref, "new"),
+        },
+    )
+    payload = {
+        "delivery": {
+            "command": command,
+            "mode": mode,
+            "generated_at": _utcnow(),
+        },
+        "task": _build_task_payload(task) if task else None,
+        "story": _build_story_payload(story),
+        "use_case": {
+            "id": use_case.get("id", uc_ref),
+            "name": use_case.get("name", ""),
+            "description": use_case.get("description", ""),
+            "origin": use_case.get("origin", "new"),
+            "fluxo_id": story.get("fluxo_id", ""),
+        },
+        "ears": _build_ears_payload(data, story, task),
+        "architecture_context": context.get(
+            "architecture", {"principles": [], "components": [], "folders": []}
+        ),
+        "dependencies_context": context.get(
+            "dependencies", {"packages": [], "services": []}
+        ),
+        "progress": _progress_snapshot(data),
+        "quality_gate": _quality_gate_snapshot(data),
+    }
+    return payload
 
 
 # ------------------------------------------------------------------
@@ -205,7 +435,11 @@ def _scan_for_mocks(file_paths: list[str], project_root: Path) -> list[str]:
         except Exception as exc:
             violations.append(f"{fp}: erro de leitura — {exc}")
             continue
-        ml_state: dict = {"in_block_comment": False, "in_triple_quote": False, "quote_char": ""}
+        ml_state: dict = {
+            "in_block_comment": False,
+            "in_triple_quote": False,
+            "quote_char": "",
+        }
         for i, line in enumerate(content.splitlines(), 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#!"):
@@ -215,7 +449,6 @@ def _scan_for_mocks(file_paths: list[str], project_root: Path) -> list[str]:
             if _MOCK_RE.search(stripped):
                 violations.append(f"{fp}:{i}: {stripped[:80]}")
     return violations
-
 
 
 # ------------------------------------------------------------------
@@ -228,7 +461,9 @@ def _toposort_tasks(data: dict) -> list[str]:
     Only returns pending/in_progress tasks. Completed tasks are excluded.
     Detects and reports circular dependencies."""
     all_pairs = _all_tasks(data)
-    completed_ids = {t["id"] for _, t in all_pairs if t["status"] in ("completed", "skipped")}
+    completed_ids = {
+        t["id"] for _, t in all_pairs if t["status"] in ("completed", "skipped")
+    }
 
     pending = []
     for _story, task in all_pairs:
@@ -260,7 +495,10 @@ def _toposort_tasks(data: dict) -> list[str]:
 
     orphaned = [t["id"] for t in pending if t["id"] not in set(order)]
     if orphaned:
-        print(f"AVISO: dependencia circular detectada — tasks travadas: {', '.join(orphaned)}", file=sys.stderr)
+        print(
+            f"AVISO: dependencia circular detectada — tasks travadas: {', '.join(orphaned)}",
+            file=sys.stderr,
+        )
 
     return order
 
@@ -303,7 +541,10 @@ def _check_pipeline_order(spec_path: Path) -> None:
         print("ERRO: spec.json incompleto — /plan nao foi finalizado.", file=sys.stderr)
         for e in errors:
             print(f"   - {e}", file=sys.stderr)
-        print("   Execute /plan, finalize a especificacao e rode 'spec_builder.py validate'.", file=sys.stderr)
+        print(
+            "   Execute /plan, finalize a especificacao e rode 'spec_builder.py validate'.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -317,25 +558,49 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
     else:
         nexus = _find_nexus_root()
         if nexus is None:
-            print("ERRO: --spec nao fornecido e .nexus/ nao encontrado.", file=sys.stderr)
+            print(
+                "ERRO: --spec nao fornecido e .nexus/ nao encontrado.", file=sys.stderr
+            )
             sys.exit(1)
         spec_path = nexus / "spec.json"
     _check_pipeline_order(spec_path)
+    spec_path = spec_path.resolve()
 
     with open(spec_path, "r", encoding="utf-8") as f:
         spec = json.load(f)
 
-    ears_index = {}
+    ears_index: dict[str, str] = {}
+    ears_detail_index: dict[str, dict] = {}
+    uc_ears_index: dict[str, list[dict]] = defaultdict(list)
     for ear in spec.get("ears", []):
-        ears_index[ear["id"]] = ear["notation"]
+        ear_id = ear.get("id", "")
+        notation = ear.get("notation", "")
+        uc_ref = ear.get("uc_ref", "")
+        ears_index[ear_id] = notation
+        detail = {
+            "id": ear_id,
+            "uc_ref": uc_ref,
+            "type": ear.get("type", ""),
+            "notation": notation,
+        }
+        ears_detail_index[ear_id] = detail
+        if uc_ref:
+            uc_ears_index[uc_ref].append(detail)
 
     entity_index = {}
     for ent in spec.get("entities", []):
         entity_index[ent["name"]] = ent["definition"]
 
     uc_origins = {}
+    uc_index = {}
     for uc in spec.get("use_cases", []):
         uc_origins[uc["id"]] = uc.get("origin", "new")
+        uc_index[uc["id"]] = {
+            "id": uc.get("id", ""),
+            "name": uc.get("name", ""),
+            "description": uc.get("description", ""),
+            "origin": uc.get("origin", "new"),
+        }
 
     screens_index: dict[str, list[dict]] = {}
     visual_path = spec_path.parent / "visual.json"
@@ -366,10 +631,17 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
             "overview": spec.get("overview", ""),
             "decisions": spec.get("decisions", []),
             "ears_index": ears_index,
+            "ears_detail_index": ears_detail_index,
+            "uc_ears_index": dict(uc_ears_index),
             "entity_index": entity_index,
             "invariants": spec.get("invariants", []),
             "screens": screens_index,
             "uc_origins": uc_origins,
+            "uc_index": uc_index,
+            "architecture": spec.get(
+                "architecture", {"principles": [], "components": [], "folders": []}
+            ),
+            "dependencies": spec.get("dependencies", {"packages": [], "services": []}),
         },
         "stories": [],
         "execution": {
@@ -377,6 +649,11 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
             "total_tasks": 0,
             "completed_tasks": 0,
             "failed_attempts": 0,
+        },
+        "quality": {
+            "tests_status": "healthy",
+            "blocked_reason": "",
+            "updated_at": _utcnow(),
         },
         "log": [],
     }
@@ -389,9 +666,13 @@ def cmd_init(bl_path: Path, args: argparse.Namespace) -> None:
     new_ucs = sum(1 for v in uc_origins.values() if v == "new")
     inferred_ucs = sum(1 for v in uc_origins.values() if v == "inferred")
     print(f"OK backlog.json criado: {bl_path}")
-    print(f"   Plano: {plan} | Contexto: {decs} decisoes, {ears} EARS, {ents} entidades")
+    print(
+        f"   Plano: {plan} | Contexto: {decs} decisoes, {ears} EARS, {ents} entidades"
+    )
     if inferred_ucs > 0:
-        print(f"   UCs: {new_ucs} new (gerarao stories), {inferred_ucs} inferred (somente contexto)")
+        print(
+            f"   UCs: {new_ucs} new (gerarao stories), {inferred_ucs} inferred (somente contexto)"
+        )
     else:
         print(f"   UCs: {new_ucs} new")
     if screens_index:
@@ -438,9 +719,11 @@ def cmd_add_criterio(bl_path: Path, args: argparse.Namespace) -> None:
         sys.exit(1)
     criterio = {"dado": args.dado, "quando": args.quando, "entao": args.entao}
     for existing in story["criterios"]:
-        if (existing["dado"] == criterio["dado"]
-                and existing["quando"] == criterio["quando"]
-                and existing["entao"] == criterio["entao"]):
+        if (
+            existing["dado"] == criterio["dado"]
+            and existing["quando"] == criterio["quando"]
+            and existing["entao"] == criterio["entao"]
+        ):
             print(f"Criterio ja existe em '{args.story}' — ignorado")
             return
     story["criterios"].append(criterio)
@@ -512,7 +795,10 @@ def cmd_start(bl_path: Path, args: argparse.Namespace) -> None:
         print(f"ERRO: Task '{args.task_id}' ja esta completed.", file=sys.stderr)
         sys.exit(1)
     if task["status"] == "in_progress":
-        print(f"AVISO: Task '{args.task_id}' ja esta in_progress — reiniciando.", file=sys.stderr)
+        print(
+            f"AVISO: Task '{args.task_id}' ja esta in_progress — reiniciando.",
+            file=sys.stderr,
+        )
 
     task["status"] = "in_progress"
     task["started_at"] = _utcnow()
@@ -562,7 +848,9 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
     missing_files = [f for f in all_task_files if not (project_root / f).exists()]
     audit["files_exist"] = len(missing_files) == 0
     if missing_files:
-        gate_failures.append(("FILES", f"arquivos nao encontrados: {', '.join(missing_files)}"))
+        gate_failures.append(
+            ("FILES", f"arquivos nao encontrados: {', '.join(missing_files)}")
+        )
 
     # ── GATE 2: Anti-mock scan on implementation files only ──
     test_file_set = set(claimed_test_files)
@@ -574,10 +862,14 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
 
     # ── GATE 3: Claimed test files exist on disk ──
     if claimed_test_files:
-        missing_tests = [f for f in claimed_test_files if not (project_root / f).exists()]
+        missing_tests = [
+            f for f in claimed_test_files if not (project_root / f).exists()
+        ]
         audit["test_files_exist"] = len(missing_tests) == 0
         if missing_tests:
-            gate_failures.append(("TESTS", f"test files nao encontrados: {', '.join(missing_tests)}"))
+            gate_failures.append(
+                ("TESTS", f"test files nao encontrados: {', '.join(missing_tests)}")
+            )
     else:
         audit["test_files_exist"] = None
 
@@ -585,9 +877,16 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
     if claimed_test_files:
         audit["tests_pass_check"] = claimed_failed == 0 and claimed_passed > 0
         if claimed_failed > 0:
-            gate_failures.append(("TEST_RESULT", f"IA reportou {claimed_failed} teste(s) falhando"))
+            gate_failures.append(
+                ("TEST_RESULT", f"IA reportou {claimed_failed} teste(s) falhando")
+            )
         if claimed_passed == 0:
-            gate_failures.append(("TEST_RESULT", "IA reportou 0 testes passando (nenhum teste executado?)"))
+            gate_failures.append(
+                (
+                    "TEST_RESULT",
+                    "IA reportou 0 testes passando (nenhum teste executado?)",
+                )
+            )
     else:
         audit["tests_pass_check"] = None
 
@@ -598,15 +897,26 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
         all_details = "; ".join(f"[{g}] {d}" for g, d in gate_failures)
         task["last_error"] = all_details
         _append_log(data, args.task_id, "rejected", all_details)
+
+        has_test_failure = any(g == "TEST_RESULT" for g, _ in gate_failures)
+        if has_test_failure:
+            _set_tests_status(data, "blocked", all_details)
+
         _update_execution_counts(data)
         _save(bl_path, data)
         for gate, detail in gate_failures:
             print(f"REJEITADO [{gate}]: {detail}", file=sys.stderr)
         print(f"TENTATIVA: {failures}/3", file=sys.stderr)
         if 2 <= failures < 3:
-            print("ATENCAO: Correcao anterior nao resolveu. Releia o contexto da task e mude a abordagem.", file=sys.stderr)
+            print(
+                "ATENCAO: Correcao anterior nao resolveu. Releia o contexto da task e mude a abordagem.",
+                file=sys.stderr,
+            )
         if failures >= 3:
-            print(f"CIRCUIT BREAKER: {args.task_id} falhou {failures}x. HALT.", file=sys.stderr)
+            print(
+                f"CIRCUIT BREAKER: {args.task_id} falhou {failures}x. HALT.",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
     # ── ALL GATES PASSED → generate evidence ──
@@ -632,6 +942,9 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
         "test_count": claimed_passed,
     }
     _append_log(data, args.task_id, "completed", f"evidence: {evidence_path.name}")
+
+    _set_tests_status(data, "healthy", "")
+
     _update_execution_counts(data)
 
     ex = data["execution"]
@@ -641,7 +954,9 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
     _save(bl_path, data)
     pct = _pct(data)
     gates = task["verification"]
-    print(f"OK Task '{args.task_id}' completed ({gates['gates_passed']}/{gates['gates_total']} gates)")
+    print(
+        f"OK Task '{args.task_id}' completed ({gates['gates_passed']}/{gates['gates_total']} gates)"
+    )
     print(f"   Evidencia: {evidence_path}")
     print(f"   Progresso: {pct}%")
     if data["status"] == "completed":
@@ -673,7 +988,9 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
     """Compose the full context the AI needs to execute a task."""
     lines = []
     lines.append(f"TASK: {task['id']} — {task['title']}")
-    lines.append(f"TIPO: {task['tipo']} | NIVEL: {task['nivel']} | STATUS: {task['status']}")
+    lines.append(
+        f"TIPO: {task['tipo']} | NIVEL: {task['nivel']} | STATUS: {task['status']}"
+    )
     lines.append(f"HISTORIA: {story['id']} ({story['descricao']})")
     lines.append(f"UC: {story['uc_ref']} | FLUXO: {story['fluxo_id']}")
     lines.append("")
@@ -716,6 +1033,7 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
     lines.append("")
 
     ears_index = data.get("context", {}).get("ears_index", {})
+    uc_ears_index = data.get("context", {}).get("uc_ears_index", {})
     if task.get("ears_refs"):
         lines.append("EARS RELACIONADOS:")
         for ref in task["ears_refs"]:
@@ -723,8 +1041,17 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
             lines.append(f"  - [{ref}] {notation}")
         lines.append("")
 
-    screens_index = data.get("context", {}).get("screens", {})
     uc_ref = story.get("uc_ref", "")
+    uc_ears = uc_ears_index.get(uc_ref, [])
+    if uc_ears:
+        lines.append(f"MAPEAMENTO UC↔EARS ({uc_ref}):")
+        for item in uc_ears:
+            lines.append(
+                f"  - [{item.get('id', '?')}] ({item.get('type', '')}) {item.get('notation', '')}"
+            )
+        lines.append("")
+
+    screens_index = data.get("context", {}).get("screens", {})
     uc_screens = screens_index.get(uc_ref, [])
     if uc_screens:
         lines.append(f"LAYOUT (telas do {uc_ref}):")
@@ -734,7 +1061,7 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
                 lines.append(f"    {scr['layout']}")
             components = scr.get("components", {})
             if components:
-                lines.append(f"    Componentes:")
+                lines.append("    Componentes:")
                 for comp_name, comp_spec in components.items():
                     lines.append(f"      {comp_name}: {comp_spec}")
         lines.append("")
@@ -754,12 +1081,48 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
             lines.append(f"  - {d['label']}: {d['chosen']} ({d['rationale']})")
         lines.append("")
 
+    architecture = data.get("context", {}).get("architecture", {})
+    if architecture:
+        lines.append("ARQUITETURA:")
+        for principle in architecture.get("principles", []):
+            lines.append(f"  - Principio: {principle}")
+        for component in architecture.get("components", []):
+            lines.append(f"  - Componente: {component}")
+        for folder in architecture.get("folders", []):
+            lines.append(
+                f"  - Pasta {folder.get('path', '')}: {folder.get('purpose', '')}"
+            )
+        lines.append("")
+
+    dependencies = data.get("context", {}).get("dependencies", {})
+    packages = dependencies.get("packages", [])
+    services = dependencies.get("services", [])
+    if packages or services:
+        lines.append("DEPENDENCIAS (SPEC):")
+        for pkg in packages:
+            envs = ", ".join(pkg.get("environments", []))
+            lines.append(
+                f"  - Package {pkg.get('name', '')}@{pkg.get('version', '')} [{envs}]"
+            )
+        for svc in services:
+            envs = ", ".join(svc.get("environments", []))
+            lines.append(f"  - Service {svc.get('name', '')} [{envs}]")
+        lines.append("")
+
     entity_index = data.get("context", {}).get("entity_index", {})
     if entity_index:
         lines.append("ENTIDADES:")
         for name, defn in entity_index.items():
             lines.append(f"  - {name}: {defn}")
         lines.append("")
+
+    quality_gate = _quality_gate_snapshot(data)
+    lines.append(
+        f"QUALITY GATE: tests_status={quality_gate['tests_status']} blocked={quality_gate['blocked']}"
+    )
+    if quality_gate.get("blocked_reason"):
+        lines.append(f"  blocked_reason: {quality_gate['blocked_reason']}")
+    lines.append("")
 
     if task.get("failures", 0) > 0:
         lines.append(f"ATENCAO: {task['failures']} falha(s) anterior(es).")
@@ -770,69 +1133,155 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
     return "\n".join(lines)
 
 
-def cmd_next(bl_path: Path, _args: argparse.Namespace) -> None:
+def cmd_next(bl_path: Path, args: argparse.Namespace) -> None:
     data = _load(bl_path)
+    _assert_delivery_unblocked(data)
+
+    selected_story: Optional[dict] = None
+    selected_task: Optional[dict] = None
+    mode = "next"
 
     for s, t in _all_tasks(data):
         if t["status"] == "in_progress":
-            pct = _pct(data)
-            remaining = len(_toposort_tasks(data))
-            print(f"PROXIMA TASK ({remaining} restantes, {pct}% completo) [RETOMANDO]:")
-            print("---")
-            print(_format_task_context(data, s, t))
+            selected_story = s
+            selected_task = t
+            mode = "resume"
+            break
+
+    if selected_task is None:
+        order = _toposort_tasks(data)
+        if not order:
+            ex = data["execution"]
+            if ex["completed_tasks"] == ex["total_tasks"] and ex["total_tasks"] > 0:
+                print("PLANO COMPLETO — nenhuma task pendente.")
+            else:
+                print("Nenhuma task disponivel (possivel deadlock de dependencias).")
             return
 
-    order = _toposort_tasks(data)
+        next_id = order[0]
+        selected_story, selected_task = _find_task(data, next_id)
+        if selected_story is None or selected_task is None:
+            print(f"ERRO: task {next_id} nao encontrada.", file=sys.stderr)
+            sys.exit(1)
 
-    if not order:
-        ex = data["execution"]
-        if ex["completed_tasks"] == ex["total_tasks"] and ex["total_tasks"] > 0:
-            print("PLANO COMPLETO — nenhuma task pendente.")
-        else:
-            print("Nenhuma task disponivel (possivel deadlock de dependencias).")
+    if args.format == "yaml":
+        payload = _build_delivery_payload(
+            data,
+            selected_story,
+            selected_task,
+            command="next",
+            mode=mode,
+        )
+        print(_to_yaml(payload))
         return
 
-    next_id = order[0]
-    story, task = _find_task(data, next_id)
-    if story is None or task is None:
-        print(f"ERRO: task {next_id} nao encontrada.", file=sys.stderr)
-        sys.exit(1)
-
-    remaining = len(order)
+    remaining = len(_toposort_tasks(data))
     pct = _pct(data)
-    print(f"PROXIMA TASK ({remaining} restantes, {pct}% completo):")
+    if mode == "resume":
+        print(f"PROXIMA TASK ({remaining} restantes, {pct}% completo) [RETOMANDO]:")
+    else:
+        print(f"PROXIMA TASK ({remaining} restantes, {pct}% completo):")
     print("---")
-    print(_format_task_context(data, story, task))
+    print(_format_task_context(data, selected_story, selected_task))
 
 
 def cmd_context(bl_path: Path, args: argparse.Namespace) -> None:
     data = _load(bl_path)
+    _assert_delivery_unblocked(data)
 
     if args.task_id:
         story, task = _find_task(data, args.task_id)
-        if task is None:
+        if task is None or story is None:
             print(f"ERRO: Task '{args.task_id}' nao encontrada.", file=sys.stderr)
             sys.exit(1)
-        print(_format_task_context(data, story, task))
 
-    elif args.story_id:
+        if args.format == "yaml":
+            payload = _build_delivery_payload(
+                data,
+                story,
+                task,
+                command="context",
+                mode="task",
+            )
+            print(_to_yaml(payload))
+            return
+
+        print(_format_task_context(data, story, task))
+        return
+
+    if args.story_id:
         story = _find_story(data, args.story_id)
         if story is None:
             print(f"ERRO: Historia '{args.story_id}' nao encontrada.", file=sys.stderr)
             sys.exit(1)
+
+        uc_ref = story.get("uc_ref", "")
+        uc_index = data.get("context", {}).get("uc_index", {})
+        use_case = uc_index.get(
+            uc_ref,
+            {
+                "id": uc_ref,
+                "name": "",
+                "description": "",
+                "origin": data.get("context", {})
+                .get("uc_origins", {})
+                .get(uc_ref, "new"),
+            },
+        )
+
+        if args.format == "yaml":
+            payload = {
+                "delivery": {
+                    "command": "context",
+                    "mode": "story",
+                    "generated_at": _utcnow(),
+                },
+                "task": None,
+                "story": _build_story_payload(story),
+                "tasks": [_build_task_payload(t) for t in story.get("tasks", [])],
+                "use_case": {
+                    "id": use_case.get("id", uc_ref),
+                    "name": use_case.get("name", ""),
+                    "description": use_case.get("description", ""),
+                    "origin": use_case.get("origin", "new"),
+                    "fluxo_id": story.get("fluxo_id", ""),
+                },
+                "ears": {
+                    "task_refs": [],
+                    "use_case_refs": data.get("context", {})
+                    .get("uc_ears_index", {})
+                    .get(uc_ref, []),
+                },
+                "architecture_context": data.get("context", {}).get(
+                    "architecture", {"principles": [], "components": [], "folders": []}
+                ),
+                "dependencies_context": data.get("context", {}).get(
+                    "dependencies", {"packages": [], "services": []}
+                ),
+                "progress": _progress_snapshot(data),
+                "quality_gate": _quality_gate_snapshot(data),
+            }
+            print(_to_yaml(payload))
+            return
+
         print(f"HISTORIA: {story['id']} — {story['descricao']}")
         print(f"UC: {story['uc_ref']} | FLUXO: {story['fluxo_id']}")
         if story.get("criterios"):
             print(f"\nCRITERIOS ({len(story['criterios'])}):")
             for i, c in enumerate(story["criterios"], 1):
-                print(f"  {i}. DADO {c['dado']} QUANDO {c['quando']} ENTAO {c['entao']}")
+                print(
+                    f"  {i}. DADO {c['dado']} QUANDO {c['quando']} ENTAO {c['entao']}"
+                )
         print(f"\nTASKS ({len(story['tasks'])}):")
         for t in story["tasks"]:
-            icon = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
+            icon = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(
+                t["status"], "[?]"
+            )
             print(f"  {icon} {t['id']} — {t['title']} [{t['tipo']}]")
-    else:
-        print("ERRO: Use --task <id> ou --story <id>", file=sys.stderr)
-        sys.exit(1)
+        return
+
+    print("ERRO: Use --task <id> ou --story <id>", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_recovery(bl_path: Path, _args: argparse.Namespace) -> None:
@@ -908,12 +1357,25 @@ def _progress_bar(pct: int, width: int = 20) -> str:
     return "[" + "#" * filled + "." * (width - filled) + "]"
 
 
-def cmd_progress(bl_path: Path, _args: argparse.Namespace) -> None:
+def cmd_progress(bl_path: Path, args: argparse.Namespace) -> None:
     data = _load(bl_path)
+    if args.format == "yaml":
+        payload = {
+            "delivery": {
+                "command": "progress",
+                "mode": "snapshot",
+                "generated_at": _utcnow(),
+            },
+            "progress": _progress_snapshot(data),
+            "quality_gate": _quality_gate_snapshot(data),
+        }
+        print(_to_yaml(payload))
+        return
+
     pct = _pct(data)
     plan_ref = data.get("plan_ref", "?")
 
-    print(f"\U0001F4CA PROGRESSO: {plan_ref}  [ {pct}% ]")
+    print(f"\U0001f4ca PROGRESSO: {plan_ref}  [ {pct}% ]")
     print("")
 
     for story in data.get("stories", []):
@@ -923,29 +1385,31 @@ def cmd_progress(bl_path: Path, _args: argparse.Namespace) -> None:
 
         all_done = total > 0 and completed_count == total
         if all_done:
-            print(f"\u2705 [{story['id']}] {story['descricao']} ({completed_count}/{total})")
+            print(
+                f"\u2705 [{story['id']}] {story['descricao']} ({completed_count}/{total})"
+            )
             continue
 
-        print(f"\U0001F4D6 [{story['id']}] {story['descricao']}")
+        print(f"\U0001f4d6 [{story['id']}] {story['descricao']}")
 
         for task in tasks:
             status = task["status"]
             failures = task.get("failures", 0)
 
             if status == "completed":
-                icon = "\u2705 \U0001F7E2"
+                icon = "\u2705 \U0001f7e2"
             elif status == "in_progress":
-                icon = "\U0001F504 \U0001F534"
+                icon = "\U0001f504 \U0001f534"
             else:
-                icon = "\u23F3 \u26AA"
+                icon = "\u23f3 \u26aa"
 
             suffix = ""
             if status == "in_progress":
                 suffix = " \u2190 EXECUTANDO"
                 if failures > 0:
-                    suffix += f" (\u26A0\uFE0F {failures}x falha)"
+                    suffix += f" (\u26a0\ufe0f {failures}x falha)"
             elif failures > 0:
-                suffix += f" (\u26A0\uFE0F {failures}x falha)"
+                suffix += f" (\u26a0\ufe0f {failures}x falha)"
 
             print(f"  {icon} [{task['id']}] {task['title']} [{task['tipo']}]{suffix}")
 
@@ -955,7 +1419,13 @@ def cmd_progress(bl_path: Path, _args: argparse.Namespace) -> None:
     total = ex.get("total_tasks", 0)
     completed_total = ex.get("completed_tasks", 0)
     failed = ex.get("failed_attempts", 0)
+    quality_gate = _quality_gate_snapshot(data)
     print(f"  Total: {completed_total}/{total} tasks | Falhas acumuladas: {failed}")
+    print(
+        f"  QualityGate: tests_status={quality_gate['tests_status']} | blocked={quality_gate['blocked']}"
+    )
+    if quality_gate.get("blocked_reason"):
+        print(f"  BlockedReason: {quality_gate['blocked_reason']}")
 
 
 def cmd_show(bl_path: Path, _args: argparse.Namespace) -> None:
@@ -987,7 +1457,9 @@ def cmd_show(bl_path: Path, _args: argparse.Namespace) -> None:
     inferred_ucs = sum(1 for v in uc_origins.values() if v == "inferred")
     print(f"   Contexto: {decs} decisoes | {ears} EARS | {ents} entidades")
     if inferred_ucs > 0:
-        print(f"   UCs: {new_ucs} new, {inferred_ucs} inferred (stories geradas somente para new)")
+        print(
+            f"   UCs: {new_ucs} new, {inferred_ucs} inferred (stories geradas somente para new)"
+        )
 
 
 def cmd_validate(bl_path: Path, _args: argparse.Namespace) -> None:
@@ -1047,7 +1519,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # init
     s = sub.add_parser("init", help="Criar backlog.json a partir de spec.json")
-    s.add_argument("--spec", default="", help="Caminho do spec.json (auto-descobre .nexus/spec.json se omitido)")
+    s.add_argument(
+        "--spec",
+        default="",
+        help="Caminho do spec.json (auto-descobre .nexus/spec.json se omitido)",
+    )
 
     # add-story
     s = sub.add_parser("add-story", help="Registrar historia de usuario")
@@ -1069,27 +1545,47 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--id", required=True, help="ID da task (ex: TASK-001)")
     s.add_argument("--title", required=True, help="Titulo da task")
     s.add_argument("--tipo", required=True, help="Tipo: Dados, UI, API, Integracao")
-    s.add_argument("--nivel", type=int, default=0, help="Nivel de dependencia (0, 1, 2)")
+    s.add_argument(
+        "--nivel", type=int, default=0, help="Nivel de dependencia (0, 1, 2)"
+    )
     s.add_argument("--objetivo", required=True, help="Objetivo da task")
     s.add_argument("--pre-condicao", nargs="+", default=[], help="Pre-condicoes")
     s.add_argument("--pos-condicao", nargs="+", default=[], help="Pos-condicoes")
-    s.add_argument("--diretiva", default="", help="Diretiva de teste (Integracao, Componente, E2E)")
+    s.add_argument(
+        "--diretiva", default="", help="Diretiva de teste (Integracao, Componente, E2E)"
+    )
     s.add_argument("--verify-cmd", default="", help="Comando de verificacao")
     s.add_argument("--files", nargs="+", default=[], help="Arquivos da task")
-    s.add_argument("--dependencies", nargs="+", default=[], help="IDs de tasks dependentes")
-    s.add_argument("--ears-refs", nargs="+", default=[], help="IDs de EARS relacionados")
+    s.add_argument(
+        "--dependencies", nargs="+", default=[], help="IDs de tasks dependentes"
+    )
+    s.add_argument(
+        "--ears-refs", nargs="+", default=[], help="IDs de EARS relacionados"
+    )
 
     # start
     s = sub.add_parser("start", help="Marcar task como in_progress")
     s.add_argument("task_id", help="ID da task")
 
     # complete
-    s = sub.add_parser("complete", help="Validar claims da IA e marcar task como completed")
+    s = sub.add_parser(
+        "complete", help="Validar claims da IA e marcar task como completed"
+    )
     s.add_argument("task_id", help="ID da task")
-    s.add_argument("--test-files", nargs="+", default=[], help="Arquivos de teste criados pela IA")
-    s.add_argument("--test-passed", type=int, default=0, help="Numero de testes que passaram")
-    s.add_argument("--test-failed", type=int, default=0, help="Numero de testes que falharam")
-    s.add_argument("--project-root", default="", help="Raiz do projeto (default: 3 niveis acima do backlog.json)")
+    s.add_argument(
+        "--test-files", nargs="+", default=[], help="Arquivos de teste criados pela IA"
+    )
+    s.add_argument(
+        "--test-passed", type=int, default=0, help="Numero de testes que passaram"
+    )
+    s.add_argument(
+        "--test-failed", type=int, default=0, help="Numero de testes que falharam"
+    )
+    s.add_argument(
+        "--project-root",
+        default="",
+        help="Raiz do projeto (default: 3 niveis acima do backlog.json)",
+    )
 
     # fail
     s = sub.add_parser("fail", help="Registrar falha em uma task")
@@ -1097,19 +1593,37 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--error", default="", help="Descricao do erro")
 
     # next
-    sub.add_parser("next", help="Obter proxima task com contexto completo")
+    s = sub.add_parser("next", help="Obter proxima task com contexto completo")
+    s.add_argument(
+        "--format",
+        choices=["yaml", "text"],
+        default="yaml",
+        help="Formato de saida (default: yaml)",
+    )
 
     # context
     s = sub.add_parser("context", help="Obter contexto de task ou historia especifica")
     g = s.add_mutually_exclusive_group(required=True)
     g.add_argument("--task", dest="task_id", help="ID da task")
     g.add_argument("--story", dest="story_id", help="ID da historia")
+    s.add_argument(
+        "--format",
+        choices=["yaml", "text"],
+        default="yaml",
+        help="Formato de saida (default: yaml)",
+    )
 
     # recovery
     sub.add_parser("recovery", help="Gerar prompt de recuperacao apos crash")
 
     # progress
-    sub.add_parser("progress", help="Exibir progresso hierarquico")
+    s = sub.add_parser("progress", help="Exibir progresso hierarquico")
+    s.add_argument(
+        "--format",
+        choices=["yaml", "text"],
+        default="text",
+        help="Formato de saida (default: text)",
+    )
 
     # show
     sub.add_parser("show", help="Exibir resumo do backlog")
@@ -1199,7 +1713,10 @@ def _resolve_next_run(nexus_root: Path) -> Path:
         if status == "completed" and _run_is_fully_closed(run_dir):
             next_num = int(run_dir.name) + 1
             return runs_dir / f"{next_num:03d}"
-        print(f"ERRO: run ativa em {run_dir.name} — complete /dev e /review antes de iniciar nova run.", file=sys.stderr)
+        print(
+            f"ERRO: run ativa em {run_dir.name} — complete /dev e /review antes de iniciar nova run.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     max_num = int(existing[-1].name)
@@ -1210,14 +1727,20 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in _ACTIONS:
         nexus = _find_nexus_root()
         if nexus is None:
-            print("ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.", file=sys.stderr)
+            print(
+                "ERRO: .nexus/ nao encontrado. Execute a partir do diretorio do projeto.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         if sys.argv[1] == "init":
             run_dir = _resolve_next_run(nexus)
         else:
             run_dir = _resolve_active_run(nexus)
             if run_dir is None:
-                print("ERRO: nenhuma run com backlog encontrada em .nexus/runs/.", file=sys.stderr)
+                print(
+                    "ERRO: nenhuma run com backlog encontrada em .nexus/runs/.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
         sys.argv.insert(1, str(run_dir / "backlog.json"))
 

@@ -55,6 +55,22 @@ _BASE_QUESTIONS: list[dict] = [
         "rationale": "Relational is default unless domain is schema-flexible or document-oriented.",
     },
     {
+        "category": "Architecture",
+        "question": "Which architectural decomposition should be the baseline?",
+        "option_a": "Layered architecture with explicit module boundaries",
+        "option_b": "Feature-sliced architecture with vertical modules",
+        "recommendation": "A",
+        "rationale": "Layered starts simpler; choose B when product is expected to scale in parallel domains.",
+    },
+    {
+        "category": "Dependencies",
+        "question": "How should dependencies and runtime services be managed across environments?",
+        "option_a": "Declare packages/services per env (dev/tst/prd) with pinned versions",
+        "option_b": "Maintain a single generic dependency list for all envs",
+        "recommendation": "A",
+        "rationale": "Env-specific inventory reduces deployment drift and improves operability.",
+    },
+    {
         "category": "Non-Functional",
         "question": "What are the performance/availability requirements?",
         "option_a": "Standard web expectations: <500ms p95, 99.5% uptime",
@@ -69,14 +85,6 @@ _BASE_QUESTIONS: list[dict] = [
         "option_b": "No — standard secure coding practices are sufficient",
         "recommendation": "B",
         "rationale": "Most features do not; escalate to A only if confirmed by stakeholder.",
-    },
-    {
-        "category": "Testing",
-        "question": "What is the minimum acceptable test coverage strategy?",
-        "option_a": "Unit + integration tests, ≥80% line coverage",
-        "option_b": "Unit tests only, ≥60% coverage (faster delivery)",
-        "recommendation": "A",
-        "rationale": "Nexus enforces evidence-based homologation; A makes /review simpler.",
     },
     {
         "category": "Deployment",
@@ -114,6 +122,7 @@ _INFRA_QUESTIONS: list[dict] = [
 # ------------------------------------------------------------------
 # Discovery form
 # ------------------------------------------------------------------
+
 
 @dataclass
 class DiscoveryQuestion:
@@ -181,12 +190,17 @@ class DiscoveryForm:
 # Main expander
 # ------------------------------------------------------------------
 
+
 class PromptExpander:
     """Transforms a raw user prompt into a structured discovery form."""
 
     def build_discovery_form(self, raw_prompt: str, plan_name: str) -> DiscoveryForm:
         """Build a DiscoveryForm with all discovery questions."""
-        questions_dicts = list(_BASE_QUESTIONS) + list(_INTEGRATION_QUESTIONS) + list(_INFRA_QUESTIONS)
+        questions_dicts = (
+            list(_BASE_QUESTIONS)
+            + list(_INTEGRATION_QUESTIONS)
+            + list(_INFRA_QUESTIONS)
+        )
         questions = [DiscoveryQuestion(**q) for q in questions_dicts]
         return DiscoveryForm(
             plan_name=plan_name,
@@ -224,7 +238,11 @@ class PromptExpander:
 if __name__ == "__main__":
     import sys
 
-    prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Build a delivery app with payment integration"
+    prompt = (
+        " ".join(sys.argv[1:])
+        if len(sys.argv) > 1
+        else "Build a delivery app with payment integration"
+    )
     plan_name = prompt.lower().replace(" ", "-")[:30]
     expander = PromptExpander()
     form = expander.build_discovery_form(prompt, plan_name)

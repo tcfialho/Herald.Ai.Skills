@@ -69,7 +69,7 @@ CONTEXT:  next, context, recovery
 DISPLAY:  progress, show, validate
 ```
 
-O `backlog.json` é a **única fonte de verdade** durante `/dev`. Contém: stories, tasks, status, contexto do plano (decisions, EARS, entities) e log de execução.
+O `backlog.json` é a **única fonte de verdade** durante `/dev`. Contém: stories, tasks, status, contexto do plano (decisions, UC↔EARS, arquitetura, dependências, entidades), qualidade de testes e log de execução.
 
 ---
 
@@ -196,7 +196,29 @@ python scripts/backlog.py validate
 python scripts/backlog.py progress
 ```
 
-### Passo 4 — Anti-Interruption Execution Loop
+### Entrega Estruturada (YAML)
+
+Os comandos de entrega `next` e `context` agora usam **YAML estruturado como padrão** para consumo automatizado:
+
+```bash
+python scripts/backlog.py next
+python scripts/backlog.py context --task TASK-001
+python scripts/backlog.py context --story US-UC01-FP
+```
+
+Envelope padrão da entrega YAML:
+- `delivery`
+- `task`
+- `story`
+- `use_case`
+- `ears`
+- `architecture_context`
+- `dependencies_context`
+- `progress`
+- `quality_gate`
+
+Compatibilidade legada permanece disponível com `--format text`.
+
 
 **ESTE LOOP NÃO TEM BREAK PREMATURO. Execute até o final.**
 
@@ -204,13 +226,17 @@ Para cada iteração:
 
 ```
 1. Obter próxima task (respeita dependências automaticamente):
-   python scripts/backlog.py next
+   python scripts/backlog.py next              # YAML estruturado (default)
+   # opcional legada:
+   python scripts/backlog.py next --format text
 
 2. Marcar como in_progress:
    python scripts/backlog.py start TASK-XXX
 
 3. Exibir progresso no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
    python scripts/backlog.py progress
+   # opcional machine-readable:
+   python scripts/backlog.py progress --format yaml
    → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 
 4. IMPLEMENTAR A TASK:
@@ -235,6 +261,9 @@ Para cada iteração:
      GATE 3 — test-files existem no disco
      GATE 4 — test-failed == 0 e test-passed > 0
    O script gera automaticamente evidence/{TASK-XXX}.json com claims + audit.
+   
+   Se houver falha no gate TEST_RESULT, o backlog entra em estado **blocked** e os comandos
+   `next/context` passam a recusar entrega de task até nova conclusão bem-sucedida (`complete` com testes verdes).
    
    SE REJEITADO: corrija e re-submeta. Não avance.
    SE CIRCUIT BREAKER (3 falhas): HALT e peça ajuda ao usuário.

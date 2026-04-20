@@ -1,6 +1,6 @@
 ---
 name: Nexus /review
-description: 'Stage 3 do Framework Nexus. Última linha de defesa — executa testes regressivos, build, lint, code quality e EARS compliance. Corrige ativamente tudo que encontrar antes de reportar. Produz veredicto determinístico: APPROVED / NEEDS_REVISION.'
+description: 'Stage 3 do Framework Nexus. Última linha de defesa — executa testes regressivos, build, lint, code quality e validação funcional UC-first com EARS integrados. Corrige ativamente tudo que encontrar antes de reportar. Produz veredicto determinístico: APPROVED / NEEDS_REVISION.'
 ---
 
 # 🔬 NEXUS `/review` — EVIDENCE-BASED HOMOLOGATION
@@ -40,7 +40,7 @@ Antes de executar qualquer comando do `reviewer.py`:
 
 **O `/review` é a última linha de defesa do pipeline Nexus.** Não existe fase posterior que vá corrigir o que o `/review` encontrar — portanto, o `/review` não apenas verifica: ele **executa, corrige e re-verifica** até que tudo esteja em conformidade total.
 
-A IA nesta fase é **executora ativa**: roda testes regressivos, executa build, verifica code quality (lint, warnings, smells), avalia compliance EARS, e **corrige tudo que falhar** antes de reportar ao script. Reportar falha ao script sem ter tentado corrigir é proibido.
+A IA nesta fase é **executora ativa**: roda testes regressivos, executa build, verifica code quality (lint, warnings, smells), valida fluxos funcionais de UC e cobertura EARS integrada, e **corrige tudo que falhar** antes de reportar ao script. Reportar falha ao script sem ter tentado corrigir é proibido.
 
 **Princípio:** Nunca reporte um gate como falho se você pode corrigir o problema. O script é apenas o registrador — VOCÊ é o corretor.
 
@@ -57,7 +57,7 @@ A IA **NUNCA** escreve review.json diretamente. Toda leitura e escrita passa por
 
 ```
 CHECK:     check-readiness
-REPORT:    report-regression, report-build, report-compliance
+REPORT:    report-regression, report-build, report-usecase, report-compliance (legado)
 CERTIFY:   certify
 DISPLAY:   show
 ```
@@ -168,33 +168,30 @@ python scripts/reviewer.py report-build --passed --warnings 3
 
 ---
 
-### Passo 4 — EARS Compliance (IA avalia, corrige, reporte)
+### Passo 4 — Validação Funcional por Casos de Uso (UC-first) + EARS Integrados
 
-Para **cada** requisito EARS do spec, a IA inspeciona o código e testes para verificar cobertura completa.
+Para **cada fluxo esperado de UC** (principal e alternativos), a IA valida comportamento funcional ponta a ponta e evidencia os EARS cobertos dentro desse mesmo cenário.
 
-**PARA CADA EARS, siga este ciclo:**
+**PARA CADA UC/fluxo, siga este ciclo:**
 
-1. **Releia a notação EARS** no spec (ex: "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms")
-2. **Inspecione o código** — existe implementação que cobre esse comportamento?
-3. **Inspecione os testes** — existe teste que verifica esse comportamento?
-4. Se **implementação ou teste faltam**: implemente/teste o que faltar. Execute os testes para confirmar.
-5. **Somente quando compliant**: reporte.
+1. Releia UC e fluxo esperado (FP/FA) no spec/backlog.
+2. Execute o cenário funcional correspondente no código/testes.
+3. Verifique quais EARS foram cobertos por esse fluxo.
+4. Se o fluxo não estiver validado: implemente/corrija e re-teste.
+5. Reporte a validação funcional:
 
 ```bash
-python scripts/reviewer.py report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42 + tests/test_task.py:15"
+python scripts/reviewer.py report-usecase \
+  --uc UC-01 \
+  --flow UC-01.FP \
+  --status validated \
+  --ears REQ-01 REQ-02 \
+  --evidence "tests/acceptance/test_create_order.py:10"
 ```
 
-**Status possíveis:**
+**EARS continuam rastreados**, mas como cobertura derivada dos cenários funcionais. O comando legado `report-compliance` pode ser usado como apoio de transição quando necessário.
 
-| Status | Significado |
-|--------|------------|
-| `compliant` | Implementação + teste existem e cobrem o requisito |
-| `partial` | Implementação existe mas teste incompleto ou vice-versa |
-| `missing` | Sem implementação ou sem teste |
-
-**Regra:** Se ao inspecionar você encontrar um EARS `partial` ou `missing`, **corrija primeiro** (implemente, teste, confirme) e só então reporte como `compliant`. Reportar `partial` ou `missing` é admissão de que você não conseguiu resolver — faça isso apenas se genuinamente não for possível corrigir.
-
-**Após reportar todos os EARS:** re-execute os testes regressivos para garantir que as correções de compliance não quebraram nada. Se quebraram, volte ao Passo 2.
+**Após validar todos os fluxos UC:** re-execute os testes regressivos para garantir que correções não introduziram regressão.
 
 ---
 
@@ -204,7 +201,7 @@ python scripts/reviewer.py report-compliance --ear REQ-01 --status compliant --e
 python scripts/reviewer.py certify
 ```
 
-O script computa o veredicto a partir de 5 gates determinísticos:
+O script computa o veredicto a partir de gates determinísticos com foco funcional:
 
 | Gate | O que verifica | Fonte |
 |------|---------------|-------|
@@ -212,11 +209,12 @@ O script computa o veredicto a partir de 5 gates determinísticos:
 | **EVIDENCE** | Todos evidence files existem | `check-readiness` |
 | **BUILD** | Build passou | `report-build` |
 | **REGRESSION** | 0 testes falhando, > 0 passando | `report-regression` |
-| **COMPLIANCE** | Todos EARS com status `compliant` | `report-compliance` |
+| **UC FLOWS** | Todos os fluxos esperados validados | `report-usecase` |
+| **EARS COVERAGE** | Todos os EARS cobertos por UC/compliance | `report-usecase` + `report-compliance` |
 
 **Veredicto:**
 ```
-APPROVED       → todos os 5 gates TRUE → gera review.md
+APPROVED       → todos os gates TRUE → gera review.md
 NEEDS_REVISION → qualquer gate FALSE → lista quais falharam
 ```
 
@@ -239,7 +237,8 @@ NEEDS_REVISION → qualquer gate FALSE → lista quais falharam
 | **evidence_ok** | Arquivos `evidence/{TASK-XXX}.json` faltantes | Identifique quais tasks não têm evidence. Re-execute `backlog.py complete` para essas tasks. |
 | **build_passed** | Build/compilação falhou | Execute o build da stack. Leia os erros. Corrija o código. Re-execute e reporte via `report-build --passed`. |
 | **regression_passed** | Testes falhando na suíte completa | Execute o test runner completo. Leia cada traceback. Corrija os bugs — cuidado com regressão introduzida por correções anteriores. Re-execute e reporte via `report-regression`. |
-| **ears_compliant** | EARS sem implementação ou sem teste | Para cada EARS ID listado no FAIL: releia a notação EARS no spec, inspecione se existe implementação + teste correspondente, implemente/teste o que faltar, reporte via `report-compliance --status compliant`. |
+| **use_cases_validated** | Fluxos UC esperados sem validação funcional | Releia `use_cases_expected`, execute cenários faltantes e reporte via `report-usecase --status validated`. |
+| **ears_covered** | EARS sem cobertura por validação de UC/compliance | Vincule EARS aos cenários funcionais via `report-usecase --ears ...`; use `report-compliance` apenas se precisar complementar transição. |
 
 **Escalação progressiva:**
 - **Iteração 2:** Se os mesmos gates falharem, releia o spec.json original e compare com o código. A correção anterior pode ter introduzido novos problemas.
@@ -285,4 +284,5 @@ Se **sim**:
 | Evidence | Todos os evidence files existem |
 | Build | PASS |
 | Regression | 0 failed, > 0 passed |
-| EARS Compliance | 100% compliant |
+| Use Cases/Flows | 100% validated |
+| EARS Coverage | 100% cobertos por UC/compliance |

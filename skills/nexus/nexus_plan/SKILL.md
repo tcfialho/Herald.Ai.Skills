@@ -269,23 +269,31 @@ Use o caminho absoluto da pasta aberta na IDE (`workspaceFolder`). Nunca use `".
 ```bash
 python scripts/spec_builder.py init --plan "{plan_name}" --title "{TITULO}" --overview "{visao geral}"
 ```
+> A `overview` criada no `init` vira baseline imutável (`overview_lock`). Alterações incrementais devem ocorrer em nova run/backlog, não por edição da visão geral.
 
 **Decisões (já registradas no Passo 3, mas podem ser adicionadas/atualizadas aqui):**
 ```bash
 python scripts/spec_builder.py decision --label "Auth" --chosen "JWT (A)" --rationale "Stateless, escala horizontal."
 ```
 
-**EARS Requirements:**
+**EARS Requirements (vinculados a UC obrigatoriamente):**
 ```bash
-python scripts/spec_builder.py ear --id REQ-01 --type WHEN --notation "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms."
+python scripts/spec_builder.py ear --id REQ-01 --uc-ref UC-01 --type WHEN --notation "WHEN user submits form THE SYSTEM SHALL validate all fields within 200ms."
 ```
 
-**Atores:**
+**Arquitetura / Estrutura de Pastas (editável via spec):**
 ```bash
-python scripts/spec_builder.py actor --name "Comprador" --type "Humanos" --responsibility "Criar e cancelar pedidos."
+python scripts/spec_builder.py architecture-principle --text "Separação clara entre domínio, aplicação e infraestrutura"
+python scripts/spec_builder.py architecture-component --text "Serviço de Orquestração de Pedidos"
+python scripts/spec_builder.py architecture-folder --path "src/domain" --purpose "Regras de negócio" --owner "Backend" --notes "Sem dependência de framework"
 ```
 
-**Casos de Uso (Matriz):**
+**Dependências (pacotes/serviços por ambiente):**
+```bash
+python scripts/spec_builder.py dependency-package --name "fastapi" --kind "framework" --version "0.116.0" --install-cmd "pip install fastapi==0.116.0" --environments dev tst prd
+python scripts/spec_builder.py dependency-service --name "postgres" --purpose "Persistência relacional" --start-cmd "docker compose up -d postgres" --healthcheck "pg_isready" --environments dev tst prd
+```
+
 ```bash
 # UC novo (default, gera stories no /dev):
 python scripts/spec_builder.py uc --id UC-01 --name "Criar Pedido" --description "Submissao de novo pedido pelo comprador."
@@ -326,15 +334,18 @@ python scripts/spec_builder.py render     # gera spec.md
 > **Nota:** Os scripts auto-descobrem `.nexus/` a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.  
 > Cada subcomando faz upsert (idempotente) — chamar duas vezes com o mesmo ID atualiza em vez de duplicar.
 
-**Seções do spec.md gerado (numeração fixa):**
-1. Visão Geral
+**Seções do spec.md gerado (ordem):**
+1. Visão Geral (imutável; baseline sistêmica da aplicação)
 2. Decisões do Projeto
-3. Requisitos EARS
-4. Especificação Funcional (UML) — Diagrama, Atores, Matriz
-5. Drill-down de Casos de Uso
-6. Dicionário de Entidades
-7. Invariantes do Sistema
-8. NFRs
+3. Especificação Funcional (UML)
+   - Diagrama, Atores, Matriz de UCs
+   - Requisitos EARS + tabela de associação UC↔EARS (sem órfãos)
+4. Drill-down de Casos de Uso
+5. Arquitetura e Estrutura de Pastas
+6. Dependências (packages/services por ambiente dev/tst/prd)
+7. Dicionário de Entidades
+8. Invariantes do Sistema
+9. NFRs
 
 ---
 

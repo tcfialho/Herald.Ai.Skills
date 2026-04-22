@@ -163,6 +163,7 @@ As categorias abaixo são o **universo possível** de perguntas. A IA **NÃO** p
 | **Usuários** | SIM | Nunca — sempre há perfil de uso a definir |
 | **NFRs (Performance, etc.)** | SIM | Nunca — todo projeto tem metas mensuráveis |
 | **Deploy** | SIM | Nunca — a forma de entrega afeta a arquitetura |
+| **Arquitetura** | SIM | Nunca — toda aplicação precisa de uma estrutura de pastas que comunique intenção |
 | **Auth** | Condicional | Suprimir quando o prompt indica app offline/local sem contas (ex.: jogo local, CLI tool, widget) |
 | **Persistência** | Condicional | Suprimir quando não há dados que sobrevivam à sessão (ex.: jogo sem save, ferramenta stateless) |
 | **Segurança** | Condicional | Suprimir quando não há PII, rede, nem integrações externas (ex.: jogo offline, demo local) |
@@ -173,6 +174,29 @@ As categorias abaixo são o **universo possível** de perguntas. A IA **NÃO** p
 **Regra de supressão:** Se uma categoria condicional não se aplica ao domínio, a IA **não pergunta** e **não registra decisão** para ela. Em vez disso, registra um item na seção de Decisões com `label: "[Categoria] — N/A"`, `chosen: "Suprimido"` e `rationale` explicando por quê.
 
 **Regra de foco:** Cada pergunta deve abordar uma **decisão que afeta a arquitetura, o código ou a experiência do usuário**. Perguntas cujas respostas não alteram nenhum artefato downstream são desperdício de interação e devem ser eliminadas.
+
+**Exemplo de pergunta — Arquitetura / Estrutura de Pastas:**
+```
+**Q[N]. [[Arquitetura]]** Qual estrutura de pastas você prefere para este projeto?
+- **A)** Herald Architecture (recomendada)
+  ```
+  src/
+  ├── Api/                  # Entry (Controllers, Middlewares)
+  ├── Application/          # Domain + Pure Business Rules
+  │   ├── Entities/         # Rich Domain Entities + Value Objects
+  │   ├── Features/         # Use Cases (Commands/Queries + Handlers)
+  │   ├── Services/         # Domain Services
+  │   └── Interfaces/       # Contracts (IRepository, IWebApi)
+  └── Infrastructure/       # Concrete Implementations
+      ├── Persistence/      # ORM, DbContext, UoW
+      ├── Repositories/     # Repository implementations
+      └── WebApis/          # External API integrations
+  ```
+  > _Rationale: Separação clara entre domínio e infraestrutura. Cada pasta comunica intenção — você olha e sabe exatamente onde colocar código novo._
+- **B)** Convenções da Stack Escolhida
+  > _Rationale: Adota as convenções de projeto e estrutura de pastas recomendadas pela tecnologia selecionada (ex: Clean Architecture para .NET, Feature-Based para Angular, App Router conventions para Next.js, etc.), sem impor um padrão externo. Ideal quando o time já domina o ecossistema e quer alinhar-se às práticas da comunidade._
+> _Caso prefira outra estrutura, descreva abaixo ou cole um tree-view._
+```
 
 **Atores, UCs e Dicionário de Entidades — colete durante o discovery:**  
 Extraia todos os Atores (usuários/sistemas externos), Casos de Uso (UCs) e Entidades Críticas.  
@@ -200,7 +224,7 @@ Exemplos:
 
 ```yaml
 validation:
-  - check: 'Todas as categorias obrigatórias foram cobertas (Funcional | Usuários | NFRs | Deploy) e categorias condicionais (Auth | Persistência | Segurança) foram avaliadas quanto à relevância — cobertas ou explicitamente suprimidas com justificativa.'
+  - check: 'Todas as categorias obrigatórias foram cobertas (Funcional | Usuários | NFRs | Deploy | Arquitetura) e categorias condicionais (Auth | Persistência | Segurança) foram avaliadas quanto à relevância — cobertas ou explicitamente suprimidas com justificativa.'
     onFailure: halt
     message: 'Formulário de discovery incompleto. Não prossiga para Passo 3 sem cobertura das categorias obrigatórias e avaliação explícita das condicionais.'
     blocking: true
@@ -221,6 +245,18 @@ python scripts/spec_builder.py decision --label "Persistência" --chosen "Postgr
 ```
 ⚠️ AUTO-ASSUMED: [Q3] Persistência: PostgreSQL (recomendado — sem resposta do usuário)
 ```
+
+**Registro de Arquitetura / Estrutura de Pastas:**
+Quando o usuário escolhe ou descreve uma estrutura de pastas, registre:
+1. A decisão macro como `decision`:
+   ```bash
+   python scripts/spec_builder.py decision --label "Arquitetura" --chosen "Herald Architecture (A)" --rationale "Separação clara entre domínio e infraestrutura."
+   ```
+2. Cada pasta como `architecture-folder`:
+   ```bash
+   python scripts/spec_builder.py architecture-folder --path "src/Application/Entities" --purpose "Rich Domain Entities + Value Objects" --owner "Backend" --notes "Classes com { get; private set; }"
+   ```
+3. Se o usuário forneceu uma estrutura customizada, extraia cada pasta relevante e registre individualmente.
 
 ### Passo 4 — EARS Notation Formatting (Awesome Copilot)
 
@@ -339,13 +375,13 @@ python scripts/spec_builder.py render     # gera spec.md
 2. Decisões do Projeto
 3. Especificação Funcional (UML)
    - Diagrama, Atores, Matriz de UCs
-   - Requisitos EARS + tabela de associação UC↔EARS (sem órfãos)
 4. Drill-down de Casos de Uso
-5. Arquitetura e Estrutura de Pastas
-6. Dependências (packages/services por ambiente dev/tst/prd)
-7. Dicionário de Entidades
-8. Invariantes do Sistema
-9. NFRs
+5. Associação UC↔EARS (sem órfãos)
+6. Arquitetura e Estrutura de Pastas
+7. Dependências (packages/services por ambiente dev/tst/prd)
+8. Dicionário de Entidades
+9. Invariantes do Sistema
+10. NFRs
 
 ---
 

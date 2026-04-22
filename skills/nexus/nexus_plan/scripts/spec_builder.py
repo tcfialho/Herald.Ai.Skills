@@ -330,7 +330,17 @@ def _validate(data: dict) -> list[str]:
     if len(ears) < 5:
         errors.append(f"Minimo de 5 EARS nao atingido (atual: {len(ears)})")
 
+    seen_ear_ids: set[str] = set()
+    duplicate_ear_ids: set[str] = set()
+    seen_uc_ear_pairs: set[tuple[str, str, str]] = set()
+    duplicate_uc_ear_pairs: set[str] = set()
+
     for ear in ears:
+        ear_id = (ear.get("id", "") or "").strip() or "?"
+        if ear_id in seen_ear_ids:
+            duplicate_ear_ids.add(ear_id)
+        seen_ear_ids.add(ear_id)
+
         notation = ear.get("notation", "")
         if "THE SYSTEM SHALL" not in notation.upper():
             errors.append(f"{ear['id']}: notacao nao contem 'THE SYSTEM SHALL'")
@@ -348,6 +358,22 @@ def _validate(data: dict) -> list[str]:
             )
         elif uc_ref not in uc_ids:
             errors.append(f"{ear['id']}: uc_ref '{uc_ref}' nao existe na matriz de UCs")
+
+        pair_key = (ear_id, uc_ref, _normalize_text(notation))
+        if pair_key in seen_uc_ear_pairs:
+            duplicate_uc_ear_pairs.add(f"{ear_id}->{uc_ref}")
+        seen_uc_ear_pairs.add(pair_key)
+
+    if duplicate_ear_ids:
+        errors.append(
+            "EARS IDs duplicados detectados: " + ", ".join(sorted(duplicate_ear_ids))
+        )
+
+    if duplicate_uc_ear_pairs:
+        errors.append(
+            "Associacoes UC↔EARS duplicadas detectadas: "
+            + ", ".join(sorted(duplicate_uc_ear_pairs))
+        )
 
     actors = data.get("actors", [])
     if not actors:
@@ -512,41 +538,6 @@ def _render_md(data: dict) -> str:
                 lines.append(f"| **{uc['id']}** | {uc['name']} | {uc['description']} |")
     lines.append("")
 
-    # 3.4 Requisitos EARS e associação UC↔EARS
-    lines.append("### 3.4 Requisitos EARS e Associação UC↔EARS")
-    lines.append("")
-    ears = data.get("ears", [])
-    if ears:
-        lines.append("| ID | UC Ref | Tipo | Notação EARS |")
-        lines.append("|----|--------|------|--------------|")
-        for e in ears:
-            lines.append(
-                f"| **{e['id']}** | {e.get('uc_ref', '')} | {e['type']} | {e['notation']} |"
-            )
-
-        lines.append("")
-        lines.append("#### Associação direta UC ↔ EARS")
-        lines.append("")
-        lines.append("| UC ID | UC Nome | EARS ID | Tipo | Notação |")
-        lines.append("|-------|---------|---------|------|---------|")
-
-        uc_by_id = {uc["id"]: uc for uc in ucs}
-
-        def _ear_sort_key(item: dict) -> tuple[int, str]:
-            match = re.search(r"\d+", item.get("id", ""))
-            num = int(match.group()) if match else 10**9
-            return (num, item.get("id", ""))
-
-        for ear in sorted(ears, key=_ear_sort_key):
-            uc_ref = ear.get("uc_ref", "")
-            uc_name = uc_by_id.get(uc_ref, {}).get("name", "?")
-            lines.append(
-                f"| **{uc_ref}** | {uc_name} | **{ear['id']}** | {ear['type']} | {ear['notation']} |"
-            )
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-
     # 4. Drill-down de Casos de Uso
     lines.append("## 4. Drill-down de Casos de Uso")
     lines.append("")
@@ -599,15 +590,47 @@ def _render_md(data: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # 5. Arquitetura e Estrutura de Pastas
-    lines.append("## 5. Arquitetura e Estrutura de Pastas")
+    # 5. Associação UC↔EARS
+    lines.append("## 5. Associação UC↔EARS")
+    lines.append("")
+    ears = data.get("ears", [])
+    if ears:
+        lines.append("| EARS ID | UC ID | UC Nome | Notação |")
+        lines.append("|---------|-------|---------|---------|")
+
+        uc_by_id = {uc["id"]: uc for uc in ucs}
+
+        def _ear_sort_key(item: dict) -> tuple[int, str]:
+            match = re.search(r"\d+", item.get("id", ""))
+            num = int(match.group()) if match else 10**9
+            return (num, item.get("id", ""))
+
+        seen_rows: set[tuple[str, str, str]] = set()
+        for ear in sorted(ears, key=_ear_sort_key):
+            ear_id = (ear.get("id", "") or "").strip()
+            uc_ref = (ear.get("uc_ref", "") or "").strip()
+            notation = (ear.get("notation", "") or "").strip()
+            uc_name = uc_by_id.get(uc_ref, {}).get("name", "?")
+
+            dedupe_key = (ear_id, uc_ref, _normalize_text(notation))
+            if dedupe_key in seen_rows:
+                continue
+            seen_rows.add(dedupe_key)
+
+            lines.append(f"| **{ear_id}** | **{uc_ref}** | {uc_name} | {notation} |")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # 6. Arquitetura e Estrutura de Pastas
+    lines.append("## 6. Arquitetura e Estrutura de Pastas")
     lines.append("")
     architecture = data.get("architecture", {})
     principles = architecture.get("principles", [])
     components = architecture.get("components", [])
     folders = architecture.get("folders", [])
 
-    lines.append("### 5.1 Princípios Arquiteturais")
+    lines.append("### 6.1 Princípios Arquiteturais")
     lines.append("")
     if principles:
         for principle in principles:
@@ -616,7 +639,7 @@ def _render_md(data: dict) -> str:
         lines.append("- (nenhum princípio informado)")
     lines.append("")
 
-    lines.append("### 5.2 Componentes")
+    lines.append("### 6.2 Componentes")
     lines.append("")
     if components:
         for component in components:
@@ -625,29 +648,39 @@ def _render_md(data: dict) -> str:
         lines.append("- (nenhum componente informado)")
     lines.append("")
 
-    lines.append("### 5.3 Estrutura de Pastas")
+    lines.append("### 6.3 Estrutura de Pastas")
     lines.append("")
     if folders:
-        lines.append("| Path | Purpose | Owner | Notes |")
-        lines.append("|------|---------|-------|-------|")
         for folder in folders:
-            lines.append(
-                f"| `{folder.get('path', '')}` | {folder.get('purpose', '')} | {folder.get('owner', '')} | {folder.get('notes', '')} |"
-            )
+            path = folder.get("path", "")
+            purpose = folder.get("purpose", "")
+            owner = folder.get("owner", "")
+            notes = folder.get("notes", "")
+            meta_parts = []
+            if owner:
+                meta_parts.append(f"*{owner}*")
+            if notes:
+                meta_parts.append(notes)
+            if meta_parts:
+                lines.append(
+                    f"- `{path}` — {purpose} {'; '.join(meta_parts) if len(meta_parts) > 1 else meta_parts[0]}"
+                )
+            else:
+                lines.append(f"- `{path}` — {purpose}")
     else:
         lines.append("- (nenhuma pasta estruturada informada)")
     lines.append("")
     lines.append("---")
     lines.append("")
 
-    # 6. Dependências
-    lines.append("## 6. Dependências")
+    # 7. Dependências
+    lines.append("## 7. Dependências")
     lines.append("")
     dependencies = data.get("dependencies", {})
     packages = dependencies.get("packages", [])
     services = dependencies.get("services", [])
 
-    lines.append("### 6.1 Pacotes e Bibliotecas")
+    lines.append("### 7.1 Pacotes e Bibliotecas")
     lines.append("")
     if packages:
         lines.append("| Nome | Tipo | Versão | Install Cmd | Environments |")
@@ -661,7 +694,7 @@ def _render_md(data: dict) -> str:
         lines.append("- (nenhum pacote informado)")
     lines.append("")
 
-    lines.append("### 6.2 Serviços e Ferramentas")
+    lines.append("### 7.2 Serviços e Ferramentas")
     lines.append("")
     if services:
         lines.append("| Nome | Propósito | Start Cmd | Healthcheck | Environments |")
@@ -677,8 +710,8 @@ def _render_md(data: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # 7. Dicionário de Entidades
-    lines.append("## 7. Dicionário de Entidades")
+    # 8. Dicionário de Entidades
+    lines.append("## 8. Dicionário de Entidades")
     lines.append("")
     entities = data.get("entities", [])
     if entities:
@@ -690,8 +723,8 @@ def _render_md(data: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # 8. Invariantes do Sistema
-    lines.append("## 8. Invariantes do Sistema")
+    # 9. Invariantes do Sistema
+    lines.append("## 9. Invariantes do Sistema")
     lines.append("")
     for inv in data.get("invariants", []):
         lines.append(f"- {inv}")
@@ -699,8 +732,8 @@ def _render_md(data: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # 9. NFRs
-    lines.append("## 9. NFRs (Non-Functional Requirements)")
+    # 10. NFRs
+    lines.append("## 10. NFRs (Non-Functional Requirements)")
     lines.append("")
     for nfr in data.get("nfrs", []):
         if isinstance(nfr, dict):

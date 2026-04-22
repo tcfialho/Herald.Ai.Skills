@@ -1034,21 +1034,33 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
 
     ears_index = data.get("context", {}).get("ears_index", {})
     uc_ears_index = data.get("context", {}).get("uc_ears_index", {})
-    if task.get("ears_refs"):
-        lines.append("EARS RELACIONADOS:")
-        for ref in task["ears_refs"]:
-            notation = ears_index.get(ref, "?")
-            lines.append(f"  - [{ref}] {notation}")
-        lines.append("")
-
     uc_ref = story.get("uc_ref", "")
     uc_ears = uc_ears_index.get(uc_ref, [])
-    if uc_ears:
-        lines.append(f"MAPEAMENTO UC↔EARS ({uc_ref}):")
-        for item in uc_ears:
-            lines.append(
-                f"  - [{item.get('id', '?')}] ({item.get('type', '')}) {item.get('notation', '')}"
+
+    if task.get("ears_refs") or uc_ears:
+        lines.append(f"EARS (TASK + UC↔EARS {uc_ref}):")
+        uc_ears_by_id = {item.get("id", ""): item for item in uc_ears if item.get("id")}
+        printed_ids = set()
+
+        for ref in task.get("ears_refs", []):
+            if ref in printed_ids:
+                continue
+            uc_item = uc_ears_by_id.get(ref)
+            notation = (
+                uc_item.get("notation", "") if uc_item else ears_index.get(ref, "?")
             )
+            origin = "task+uc" if uc_item else "task"
+            lines.append(f"  - [{ref}] ({origin}) {notation}")
+            printed_ids.add(ref)
+
+        for item in uc_ears:
+            ear_id = item.get("id", "?")
+            if ear_id in printed_ids:
+                continue
+            notation = item.get("notation", "")
+            lines.append(f"  - [{ear_id}] (uc) {notation}")
+            printed_ids.add(ear_id)
+
         lines.append("")
 
     screens_index = data.get("context", {}).get("screens", {})

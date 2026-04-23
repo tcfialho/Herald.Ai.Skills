@@ -2,11 +2,13 @@
 """git-commit-tool: agent-native semantic commit orchestrator.
 
 Subcommands:
-  preflight    Check repo validity, ongoing ops, empty repo, clean tree.
+  preflight    Check repo validity, ongoing ops, empty repo, clean tree,
+               and report author identity + remote info.
   collect      Stage everything, create a per-invocation OS temp dir, and
                return its path alongside staged files + truncated diffs.
   validate     Validate <temp-dir>/commit-plan.json against staged files.
   execute      Commit groups atomically with synchronized timestamps.
+  push         Push a branch to a remote (never uses --no-verify).
   cleanup      Remove a temp dir returned by `collect`. Idempotent.
 
 Contract:
@@ -14,12 +16,15 @@ Contract:
   temp area (never inside the user's repo) and returns its path in the
   stdout JSON as `temp_dir`. The agent writes the plan into
   <temp_dir>/commit-plan.json and passes `--temp-dir <path>` to
-  `validate` and `execute`. On `execute --confirm` (success OR failure)
-  the tool wipes the temp dir before writing the final stdout payload.
-  Dry runs preserve the temp dir so the caller can retry with --confirm.
-  If the flow is abandoned before `execute --confirm` (user cancelled,
-  validation exhausted), the agent should call `cleanup --temp-dir <path>`
-  to remove the orphaned dir.
+  `validate` and `execute`. On `execute --confirm` (success OR failure
+  inside the commit loop) the tool wipes the temp dir before writing
+  the final stdout payload. Dry runs preserve the temp dir.
+  `preflight` and `execute`'s success payload both include `author`
+  and `remote_info` so the agent can display identity and offer push.
+
+Commit message policy:
+  Scope (`feat(scope):`) is intentionally rejected by the validator.
+  Only `<type>[!]: <description>` is accepted.
 
 Output channels:
   stdout  JSON payload (final response; single line).
@@ -35,6 +40,7 @@ Exit codes:
   30  Commit failed during execute; rollback performed.
   31  Rollback failed; manual intervention required.
   40  Hook blocked the commit.
+  50  Push failed (network, rejection, auth, upstream missing, etc.).
 """
 
 from __future__ import annotations
@@ -77,6 +83,7 @@ EXIT_PLAN_INVALID = 20
 EXIT_COMMIT_FAILED = 30
 EXIT_ROLLBACK_FAILED = 31
 EXIT_HOOK_BLOCKED = 40
+EXIT_PUSH_FAILED = 50
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +176,87 @@ def run_git(
 
 
 # ---------------------------------------------------------------------------
+# Author / branch / remote introspection
+# ---------------------------------------------------------------------------
+
+def _get_author() -> Optional[dict]:
+    """Return {"name", "email"} from git config. None if both are unset."""
+    name = run_git(["config", "user.name"], check=False).stdout.strip() or None
+    email = run_git(["config", "user.email"], check=False).stdout.strip() or None
+    if name is None and email is None:
+        return None
+    return {"name": name, "email": email}
+
+
+def _current_branch() -> Optional[str]:
+    """Return the current branch name, or None if detached/empty repo."""
+    result = run_git(["rev-parse", "--abbrev-ref", "HEAD"], check=False)
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value if value and value != "HEAD" else None
+
+
+def _get_remote_info(branch: Optional[str], is_empty: bool) -> dict:
+    """Collect remote/upstream/ahead-behind info for the current branch.
+
+    Always returns a dict; `has_remote` is False when `git remote` is empty.
+    `has_upstream` is only True when the current branch has a configured
+    upstream. `ahead`/`behind` are filled when available.
+    """
+    remotes_raw = run_git(["remote"], check=False).stdout
+    remote_names = [r for r in remotes_raw.splitlines() if r.strip()]
+
+    if not remote_names:
+        return {"has_remote": False, "remotes": []}
+
+    remotes = []
+    for name in remote_names:
+        url_res = run_git(["remote", "get-url", name], check=False)
+        url = url_res.stdout.strip() if url_res.returncode == 0 else None
+        remotes.append({"name": name, "url": url})
+
+    info: dict[str, Any] = {
+        "has_remote": True,
+        "remotes": remotes,
+        "has_upstream": False,
+    }
+
+    if branch is None or is_empty:
+        return info
+
+    upstream_res = run_git(
+        ["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+        check=False,
+    )
+    if upstream_res.returncode != 0:
+        return info
+
+    upstream = upstream_res.stdout.strip()
+    if not upstream:
+        return info
+
+    info["has_upstream"] = True
+    info["upstream"] = upstream
+    info["upstream_remote"] = upstream.split("/", 1)[0] if "/" in upstream else None
+
+    ab_res = run_git(
+        ["rev-list", "--left-right", "--count", f"{upstream}...HEAD"],
+        check=False,
+    )
+    if ab_res.returncode == 0:
+        parts = ab_res.stdout.strip().split()
+        if len(parts) == 2:
+            try:
+                info["behind"] = int(parts[0])
+                info["ahead"] = int(parts[1])
+            except ValueError:
+                pass
+
+    return info
+
+
+# ---------------------------------------------------------------------------
 # Regex factory for commit messages
 # ---------------------------------------------------------------------------
 
@@ -176,11 +264,12 @@ def build_commit_regex(
     allowed_types: Sequence[str],
     max_length: int,
 ) -> re.Pattern[str]:
-    """Build Conventional Commits regex: <type>[(<scope>)][!]: <desc>."""
+    """Build commit-message regex: <type>[!]: <desc>. Scope is intentionally
+    rejected — this skill enforces unscoped Conventional Commits by policy.
+    """
     types_alt = "|".join(re.escape(t) for t in allowed_types)
     pattern = (
         rf"^(?:{types_alt})"
-        r"(?:\([a-z0-9][a-z0-9\-]*\))?"
         r"!?"
         rf": .{{1,{max_length}}}$"
     )
@@ -231,6 +320,9 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
         else None
     )
 
+    author = _get_author()
+    remote_info = _get_remote_info(branch, is_empty)
+
     status = run_git(["status", "--porcelain"])
     if not status.stdout.strip():
         emit_result({
@@ -240,6 +332,8 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
             "branch": branch,
             "head": head_sha,
             "is_empty": is_empty,
+            "author": author,
+            "remote_info": remote_info,
         })
         emit_event("info", "preflight.clean")
         return EXIT_WORKING_TREE_CLEAN
@@ -249,6 +343,8 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
         "branch": branch,
         "head": head_sha,
         "is_empty": is_empty,
+        "author": author,
+        "remote_info": remote_info,
     })
     emit_event("info", "preflight.done", branch=branch, head=head_sha, is_empty=is_empty)
     return EXIT_OK
@@ -448,8 +544,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 "group_id": gid,
                 "message": message,
                 "hint": (
-                    "Expected `<type>[(<scope>)][!]: <description>` in a single line "
-                    f"up to {args.max_length} chars. Allowed types: "
+                    "Expected `<type>[!]: <description>` in a single line "
+                    f"up to {args.max_length} chars. Scope (parentheses) is "
+                    "not allowed. Allowed types: "
                     f"{', '.join(allowed_types)}."
                 ),
             })
@@ -658,14 +755,63 @@ def cmd_execute(args: argparse.Namespace) -> int:
 
     cleaned = _cleanup_temp_dir(temp_dir)
 
+    branch_after = _current_branch()
     emit_result({
         "status": "ok",
         "commits": created,
         "count": len(created),
         "synchronized_timestamp": batch_ts_iso,
         "head_before": head_before,
+        "branch": branch_after,
+        "author": _get_author(),
+        "remote_info": _get_remote_info(branch_after, is_empty=False),
         "temp_cleaned": cleaned,
     })
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# push
+# ---------------------------------------------------------------------------
+
+def cmd_push(args: argparse.Namespace) -> int:
+    emit_event(
+        "info", "push.start",
+        remote=args.remote, branch=args.branch, set_upstream=args.set_upstream,
+    )
+
+    push_argv: list[str] = ["push"]
+    if args.set_upstream:
+        push_argv.append("--set-upstream")
+    push_argv.extend([args.remote, args.branch])
+
+    result = run_git(push_argv, check=False)
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+
+    if result.returncode != 0:
+        emit_result({
+            "status": "failed",
+            "code": "PUSH_FAILED",
+            "remote": args.remote,
+            "branch": args.branch,
+            "set_upstream": args.set_upstream,
+            "git_stderr": stderr,
+            "git_stdout": stdout,
+            "exit_code": result.returncode,
+        })
+        emit_event("error", "push.failed", stderr=stderr, exit_code=result.returncode)
+        return EXIT_PUSH_FAILED
+
+    emit_result({
+        "status": "ok",
+        "remote": args.remote,
+        "branch": args.branch,
+        "set_upstream": args.set_upstream,
+        "git_stderr": stderr,
+        "git_stdout": stdout,
+    })
+    emit_event("info", "push.done", remote=args.remote, branch=args.branch)
     return EXIT_OK
 
 
@@ -720,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  30  commit failed; rollback performed\n"
             "  31  rollback failed; manual intervention required\n"
             "  40  hook blocked the commit\n"
+            "  50  push failed\n"
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="subcommand")
@@ -790,6 +937,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Let git assign a fresh timestamp per commit (default: synchronized).",
     )
     sp_exe.set_defaults(func=cmd_execute)
+
+    sp_psh = sub.add_parser(
+        "push",
+        help=(
+            "Push a branch to a remote. Never passes --no-verify. "
+            "Use --set-upstream when the branch has no upstream yet."
+        ),
+    )
+    sp_psh.add_argument(
+        "--remote", required=True, type=str,
+        help="Remote name (e.g. `origin`).",
+    )
+    sp_psh.add_argument(
+        "--branch", required=True, type=str,
+        help="Local branch name to push.",
+    )
+    sp_psh.add_argument(
+        "--set-upstream", action="store_true",
+        help="Pass `-u` so the local branch tracks <remote>/<branch> from now on.",
+    )
+    sp_psh.set_defaults(func=cmd_push)
 
     sp_cln = sub.add_parser(
         "cleanup",

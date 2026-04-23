@@ -448,15 +448,15 @@ over the numbered list in both prompts, same as the approval step.
 ## ✅ Pushed
 
 `<branch>` → `<upstream>` · **<N> commits** pushed
-
-\`\`\`
-<git_stderr verbatim>
-\`\`\`
 ```
 
 `<N>` is `remote_info.ahead` captured from the `execute` success
 payload (the value before push). If that number is unavailable, drop
-the `· **N commits** pushed` segment.
+the `· **N commits** pushed` segment. Do **not** echo the raw
+`git_stderr` transport summary (`To <url>\n   abc..def  main -> main`):
+the header line already conveys the outcome, the SHAs were shown in
+the preceding `## ✅ Commits created` table, and the URL may contain
+embedded credentials.
 
 ### After push — success (new branch / first-time upstream)
 
@@ -466,11 +466,9 @@ the `· **N commits** pushed` segment.
 ## ✅ Pushed
 
 `<branch>` → `<remote>/<branch>` · new branch · upstream set
-
-\`\`\`
-<git_stderr verbatim>
-\`\`\`
 ```
+
+Same rule: no verbatim `git_stderr` code block.
 
 ### After push — failure
 
@@ -499,7 +497,10 @@ Typical remediations:
   (`gh auth login`, `git credential fill`, etc.) and run the skill again.
 - Protected branch / policy rejection: open a pull request instead of
   pushing directly.
-- Always include the verbatim `git_stderr` so the user has full context.
+
+On failure the verbatim `git_stderr` is essential — always include it.
+If the first line is `To https://user:token@host/...`, redact the
+credential segment before pasting (`To https://<redacted>@host/...`).
 
 ### After push — skipped
 

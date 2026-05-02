@@ -71,11 +71,14 @@ Every subcommand emits a JSON result on stdout and structured events on stderr (
 | Subcommand | Flags | Purpose | Notable exit codes |
 |---|---|---|---|
 | `preflight` | — | Validate repo + capture identity and remote topology | `0` ok · `10/11` error · `12` clean |
-| `collect` | `[--max-files N] [--max-diff-lines-per-file N]` | `git add -A`, write per-file diffs, return `temp_dir`/`plan_path`/`diffs_dir` | `0` ok · `12` clean (nothing staged) |
+| `collect` | `[--max-files N] [--max-diff-lines-per-file N] [--no-add]` | `git add -A` (unless `--no-add`), write per-file diffs, return `temp_dir`/`plan_path`/`diffs_dir` | `0` ok · `12` clean (nothing staged) |
 | `validate` | `--temp-dir <path>` | Check plan JSON vs regex + staging | `0` ok · `20` invalid |
 | `execute` | `--temp-dir <path> [--confirm] [--natural-timestamps]` | Dry-run unless `--confirm`; all commits share one timestamp (1-second resolution) | `0` ok · `30` commit failed · `31` pre-loop error |
 | `push` | `--remote <name> --branch <name> [--set-upstream]` | `git push`; never `--no-verify` | `0` ok · `50` push failed |
 | `cleanup` | `--temp-dir <path>` | Idempotent removal of an abandoned `temp_dir` | `0` ok (incl. `status: "noop"` when path missing) |
+| `set-author` | `--name <N> --email <E>` | Set local repo `user.name`/`user.email` | `0` ok |
+| `create-branch` | `--name <N>` | `git checkout -b <N>` (no push, validates name, refuses if branch exists) | `0` ok · `60` invalid name · `61` branch exists · `62` checkout failed |
+| `unstage` | `--path <P>` (repeatable) | `git rm --cached` for the given paths. Pattern selection and `.gitignore` editing are the agent's job. | `0` ok (or `partial` when some paths failed) |
 
 ### `preflight` stdout shape
 
@@ -104,6 +107,8 @@ Every subcommand emits a JSON result on stdout and structured events on stderr (
 
 On staged changes, writes under `temp_dir`: `commit-plan.json` (the `plan_path` the agent must write) and `diffs/` (per-file truncated diffs, agent-only). When nothing is staged, returns `status: "clean"` (exit `12`) without creating a dir.
 
+By default `collect` runs `git add -A` first — so a human invoking the skill on a dirty tree gets everything staged automatically. Pass `--no-add` when the caller has already curated the staging area (e.g. an upstream agent staged only the files relevant to the change in progress) and that selection must be preserved. With `--no-add` the index is read as-is; if nothing is staged the result is still `status: "clean"`.
+
 ### `validate`
 
 Returns errors like `INVALID_MESSAGE_FORMAT`, `FILE_NOT_STAGED`, `STAGED_BUT_UNASSIGNED`, `DUPLICATE_FILE_ACROSS_GROUPS`. The agent fixes the plan and re-runs. After 3 attempts, surface `## ⚠️ Could not validate the plan` and call `cleanup`.
@@ -119,6 +124,28 @@ Arguments come strictly from the prior payload: `--remote` = `remote_info.upstre
 ### `cleanup`
 
 Idempotent — returns `status: "noop"` when `temp_dir` no longer exists.
+
+### `set-author`
+
+Writes `user.name` and `user.email` to the **local repo config** (`.git/config`), not global. Returns the new `author` so the agent can refresh the plan banner. No staging side-effects — the existing plan stays valid.
+
+### `create-branch`
+
+Validates the name with `git check-ref-format --branch`, refuses if the branch already exists, then runs `git checkout -b <name>`. Never pushes. Returns the new `branch` so the agent can refresh the plan banner. No staging side-effects.
+
+### `unstage`
+
+Pure git op: removes the given paths from the index via `git rm --cached --quiet --`. Pattern selection, `.gitignore` reading, and `.gitignore` editing all live on the agent side — they are text/judgment work, not deterministic git plumbing. Returns:
+
+```json
+{
+  "status": "ok",
+  "unstaged": ["node_modules/x.js", "app.log"],
+  "failed": []
+}
+```
+
+`status` becomes `"partial"` when any path failed; each failure carries `git_stderr`. After unstaging, the agent MUST `cleanup` the old `temp_dir` and re-run `collect` to rebuild the plan with the new staging area.
 
 ## Plan template
 
@@ -195,17 +222,88 @@ When `has_remote: true`, emit no warning here — the push prompt after commit w
 
 ### Approval prompt
 
-Prefer the IDE's structured question tool (`AskQuestion` in Cursor, `user_input` in Antigravity) with options `Approve and execute` / `Adjust messages or grouping` / `Cancel`. Fallback — when no such tool exists — is a numbered list for single-digit answers:
+Prefer the IDE's structured question tool (`AskQuestion` in Cursor, `user_input` in Antigravity) with the six options below. Fallback — when no such tool exists — is a numbered list for single-digit answers:
 
 ```markdown
 ### Approval
 
 1. Approve and execute
 2. Adjust messages or grouping
-3. Cancel
+3. Change author (name and email)
+4. Create new branch before commit
+5. Update `.gitignore` and unstage matching files
+6. Cancel
 ```
 
-Only explicit approval (option 1 / "approve" / "yes") proceeds to `execute`.
+Only explicit approval (option 1 / "approve" / "yes") proceeds to `execute`. Options 2 and 6 keep their previous semantics. Options 3, 4 and 5 mutate state, then **always return to this same approval prompt** (see "Adjustment flows" below).
+
+## Adjustment flows (options 3–5)
+
+Every chat message inside these flows still wears the `# 📦 git-commit` banner. Each option ends by re-displaying the plan banner and the approval menu — never by jumping to `execute`.
+
+### Option 3 — Change author
+
+1. Ask the user for the new `name` and `email` (single prompt; accept `Name <email>` or two short lines).
+2. Run `set-author --name <N> --email <E>`. The payload returns the new `author`.
+3. Rebuild the plan banner using the new `author` (the `branch` and groups stay unchanged) and re-display the approval menu.
+
+The existing `temp_dir` and plan stay valid — staging is untouched.
+
+### Option 4 — Create new branch before commit
+
+1. Ask the user for the branch name.
+2. Run `create-branch --name <N>`.
+3. On error (`INVALID_NAME`, `BRANCH_EXISTS`, `CHECKOUT_FAILED`), surface a `## ⚠️ Could not create branch` block with the reason and return to the approval menu — **do not** retry without user input.
+4. On success, rebuild the plan banner using the new `branch` (carry the existing `author`) and re-display the approval menu.
+
+Staging is untouched, so `temp_dir` and plan remain valid.
+
+### Option 5 — Update `.gitignore`
+
+The agent owns every step except the final `git rm --cached`. Pattern selection is judgment work — there is no built-in heuristic; the agent reasons over the staged file list and the project layout.
+
+1. Read the current `.gitignore` (if present) via the agent's filesystem tool.
+2. Inspect `staged_files` from the most recent `collect` payload — focus on `A` entries (new files; `M`/`D`/`R` are already tracked and need a separate `git rm --cached` workflow that this option does not handle).
+3. From the staged paths and the repo's project signals (e.g. `package.json` → Node, `pyproject.toml`/`requirements.txt` → Python, `Cargo.toml` → Rust, `go.mod` → Go, etc.), propose `.gitignore` patterns and the matching paths to the user. Use the standard skill format:
+
+   ```markdown
+   # 📦 git-commit
+
+   ## .gitignore candidates
+
+   | Pattern | Reason | Matching paths |
+   |---------|--------|----------------|
+   | `node_modules/` | Node.js dependencies | `app/node_modules/index.js` (+12 more) |
+   | `.env` | Environment secrets | `.env` |
+
+   1. Apply all
+   2. Apply selected patterns (ask user which)
+   3. Cancel
+   ```
+
+   If nothing in the staging area looks ignorable, surface `## ✅ No .gitignore candidates found` and return to the approval menu.
+
+4. On `Cancel`, return to the approval menu with the original plan untouched.
+5. On apply (all or selected):
+   1. Edit `.gitignore` in the repo root via the agent's `Write`/`Edit` tool. Append new patterns (deduplicated against existing entries) under a `# Added by git-commit skill` marker. Create the file if it does not exist.
+   2. Compute the list of staged `A` paths that the new patterns now cover (the agent already knows these from step 3 — no extra git invocation needed).
+   3. Call `unstage --path <p1> --path <p2> …` with that list. `unstage` runs `git rm --cached` for each path and returns `unstaged` / `failed`.
+6. Surface a confirmation block:
+
+   ```markdown
+   # 📦 git-commit
+
+   ## ✅ .gitignore updated
+
+   Added patterns: `node_modules/`, `.env`
+   Unstaged paths: 13
+   ```
+
+   When `failed` is non-empty, list those paths with their `git_stderr` under a `> ⚠️ Some paths could not be unstaged.` blockquote.
+7. Run `cleanup --temp-dir <old_temp_dir>`, then `collect` (the next `git add -A` inside `collect` will pick up the modified `.gitignore` automatically), then write the new plan to the new `plan_path`, then `validate` (loop up to 3 attempts).
+8. Re-display the refreshed plan banner and the approval menu.
+
+If `collect` returns `status: "clean"` after the changes (everything was unstaged and only the empty `.gitignore` remained), surface `## ⚠️ Nothing left to commit after .gitignore update` and stop.
 
 ## Push UX
 

@@ -2,14 +2,18 @@
 """git-commit-tool: agent-native semantic commit orchestrator.
 
 Subcommands:
-  preflight    Check repo validity, ongoing ops, empty repo, clean tree,
-               and report author identity + remote info.
-  collect      Stage everything, create a per-invocation OS temp dir, and
-               return its path alongside staged files + truncated diffs.
-  validate     Validate <temp-dir>/commit-plan.json against staged files.
-  execute      Commit groups atomically with synchronized timestamps.
-  push         Push a branch to a remote (never uses --no-verify).
-  cleanup      Remove a temp dir returned by `collect`. Idempotent.
+  preflight          Check repo validity, ongoing ops, empty repo, clean tree,
+                     and report author identity + remote info.
+  collect            Stage everything, create a per-invocation OS temp dir, and
+                     return its path alongside staged files + truncated diffs.
+  validate           Validate <temp-dir>/commit-plan.json against staged files.
+  execute            Commit groups atomically with synchronized timestamps.
+  push               Push a branch to a remote (never uses --no-verify).
+  cleanup            Remove a temp dir returned by `collect`. Idempotent.
+  set-author         Set local repo user.name / user.email.
+  create-branch      Validate name, refuse if exists, then `git checkout -b`.
+  unstage            `git rm --cached` for the given paths. The agent owns
+                     `.gitignore` editing; this only does the git op.
 
 Contract:
   `collect` creates a fresh temp dir via tempfile.mkdtemp() in the OS
@@ -84,6 +88,9 @@ EXIT_COMMIT_FAILED = 30
 EXIT_ROLLBACK_FAILED = 31
 EXIT_HOOK_BLOCKED = 40
 EXIT_PUSH_FAILED = 50
+EXIT_BRANCH_INVALID = 60
+EXIT_BRANCH_EXISTS = 61
+EXIT_CHECKOUT_FAILED = 62
 
 
 # ---------------------------------------------------------------------------
@@ -397,10 +404,13 @@ def _collect_diff(path: str, unified_lines: int) -> tuple[str, int]:
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
-    emit_event("info", "collect.start")
+    emit_event("info", "collect.start", no_add=args.no_add)
 
-    run_git(["add", "-A"])
-    emit_event("info", "collect.staged_all")
+    if args.no_add:
+        emit_event("info", "collect.skip_add", reason="--no-add: respecting current staging")
+    else:
+        run_git(["add", "-A"])
+        emit_event("info", "collect.staged_all")
 
     name_status = run_git(
         ["diff", "--cached", "--name-status", "--find-renames=50"],
@@ -842,6 +852,141 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# set-author
+# ---------------------------------------------------------------------------
+
+def cmd_set_author(args: argparse.Namespace) -> int:
+    name = args.name.strip()
+    email = args.email.strip()
+    emit_event("info", "set_author.start")
+
+    if not name or not email:
+        emit_result({
+            "status": "error",
+            "code": "INVALID_AUTHOR",
+            "message": "Both --name and --email must be non-empty.",
+        })
+        return 2
+
+    run_git(["config", "user.name", name])
+    run_git(["config", "user.email", email])
+
+    emit_result({
+        "status": "ok",
+        "scope": "local",
+        "author": {"name": name, "email": email},
+    })
+    emit_event("info", "set_author.done", name=name, email=email)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# create-branch
+# ---------------------------------------------------------------------------
+
+def cmd_create_branch(args: argparse.Namespace) -> int:
+    name = args.name.strip()
+    emit_event("info", "create_branch.start", name=name)
+
+    if not name:
+        emit_result({
+            "status": "error",
+            "code": "INVALID_NAME",
+            "message": "Branch name is empty.",
+        })
+        return EXIT_BRANCH_INVALID
+
+    fmt = run_git(["check-ref-format", "--branch", name], check=False)
+    if fmt.returncode != 0:
+        emit_result({
+            "status": "error",
+            "code": "INVALID_NAME",
+            "name": name,
+            "message": "Invalid git branch name.",
+            "git_stderr": (fmt.stderr or "").strip(),
+        })
+        return EXIT_BRANCH_INVALID
+
+    exists = run_git(
+        ["show-ref", "--verify", "--quiet", f"refs/heads/{name}"],
+        check=False,
+    )
+    if exists.returncode == 0:
+        emit_result({
+            "status": "error",
+            "code": "BRANCH_EXISTS",
+            "name": name,
+            "message": f"Branch `{name}` already exists.",
+        })
+        return EXIT_BRANCH_EXISTS
+
+    co = run_git(["checkout", "-b", name], check=False)
+    if co.returncode != 0:
+        emit_result({
+            "status": "error",
+            "code": "CHECKOUT_FAILED",
+            "name": name,
+            "git_stderr": (co.stderr or "").strip(),
+            "exit_code": co.returncode,
+        })
+        return EXIT_CHECKOUT_FAILED
+
+    emit_result({
+        "status": "ok",
+        "branch": name,
+    })
+    emit_event("info", "create_branch.done", name=name)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# unstage
+# ---------------------------------------------------------------------------
+#
+# The agent owns `.gitignore` editing (reads it, decides patterns, writes
+# changes via its filesystem tools). This subcommand only performs the
+# deterministic git op of removing paths from the index — `git rm --cached`.
+# After unstaging, the agent re-runs `collect` to refresh the plan.
+
+def cmd_unstage(args: argparse.Namespace) -> int:
+    paths: list[str] = [p for p in args.path if p]
+    emit_event("info", "unstage.start", count=len(paths))
+
+    if not paths:
+        emit_result({
+            "status": "error",
+            "code": "NO_PATHS",
+            "message": "Pass at least one --path.",
+        })
+        return 2
+
+    unstaged: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for path in paths:
+        rm = run_git(["rm", "--cached", "--quiet", "--", path], check=False)
+        if rm.returncode != 0:
+            failed.append({"path": path, "git_stderr": (rm.stderr or "").strip()})
+            emit_event(
+                "warn", "unstage.failed",
+                path=path, stderr=(rm.stderr or "").strip(),
+            )
+            continue
+        unstaged.append(path)
+
+    emit_result({
+        "status": "ok" if not failed else "partial",
+        "unstaged": unstaged,
+        "failed": failed,
+    })
+    emit_event(
+        "info", "unstage.done",
+        unstaged=len(unstaged), failed=len(failed),
+    )
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
 
@@ -867,6 +1012,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  31  rollback failed; manual intervention required\n"
             "  40  hook blocked the commit\n"
             "  50  push failed\n"
+            "  60  create-branch: invalid branch name\n"
+            "  61  create-branch: branch already exists\n"
+            "  62  create-branch: checkout failed\n"
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="subcommand")
@@ -892,6 +1040,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-diff-lines-per-file", type=int,
         default=MAX_DIFF_LINES_PER_FILE_DEFAULT,
         help=f"Unified-diff context lines per file (default: {MAX_DIFF_LINES_PER_FILE_DEFAULT}).",
+    )
+    sp_col.add_argument(
+        "--no-add", action="store_true",
+        help=(
+            "Skip the implicit `git add -A`. Use when the caller has already "
+            "staged the files they want committed and wants to preserve that "
+            "selection. Default behavior (without this flag) stages everything."
+        ),
     )
     sp_col.set_defaults(func=cmd_collect)
 
@@ -968,6 +1124,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to remove (must be the one returned by `collect`).",
     )
     sp_cln.set_defaults(func=cmd_cleanup)
+
+    sp_auth = sub.add_parser(
+        "set-author",
+        help=(
+            "Set local repo `user.name` / `user.email`. "
+            "Touches only `.git/config`, never the global git config."
+        ),
+    )
+    sp_auth.add_argument("--name", required=True, type=str, help="Author name.")
+    sp_auth.add_argument("--email", required=True, type=str, help="Author email.")
+    sp_auth.set_defaults(func=cmd_set_author)
+
+    sp_br = sub.add_parser(
+        "create-branch",
+        help=(
+            "Validate a branch name, refuse if it already exists, then "
+            "`git checkout -b <name>`. Never pushes."
+        ),
+    )
+    sp_br.add_argument("--name", required=True, type=str, help="Branch name to create.")
+    sp_br.set_defaults(func=cmd_create_branch)
+
+    sp_un = sub.add_parser(
+        "unstage",
+        help=(
+            "Remove paths from the index via `git rm --cached`. The agent "
+            "owns `.gitignore` editing — this only performs the git op."
+        ),
+    )
+    sp_un.add_argument(
+        "--path", action="append", required=True, type=str,
+        help="Path to unstage (repeat for multiple).",
+    )
+    sp_un.set_defaults(func=cmd_unstage)
 
     return parser
 

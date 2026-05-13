@@ -5,11 +5,20 @@ import re
 from .commands_base import resolve_root
 from .errors import NexusError
 from .audit import spike_deliverables
-from .evidence import missing_files, run_story_verify_commands
-from .markdown import acceptance_criteria_ids, evidence_section, expected_file_artifacts, extract_section, replace_section
+from .evidence import files_within_write_scope, missing_files, run_story_verify_commands
+from .markdown import (
+    acceptance_criteria_ids,
+    evidence_section,
+    expected_file_artifacts,
+    extract_section,
+    replace_section,
+    sync_coverage_checklists,
+    sync_definition_of_done,
+)
 from .paths import ensure_initialized, runtime_dir
 from .status import print_status
 from .stories import list_stories, save_story, story_by_id, story_has_open_bugs
+from .tasks import parse_tasks
 from .timeutil import iso_now
 
 
@@ -53,23 +62,50 @@ def _record_qa_bug(root, story, bug_text: str):
 
 def _validate_qa_story(root, story, verify_timeout: int) -> list[str]:
     failures: list[str] = []
-    if story_has_open_bugs(story):
+    has_open_bugs = story_has_open_bugs(story)
+    if has_open_bugs:
         failures.append("story has open QA bugs")
+    tasks = parse_tasks(story.body)
+    incomplete_tasks = [task.task_id for task in tasks if task.status != "completed"]
+    if incomplete_tasks:
+        failures.append(f"incomplete tasks: {', '.join(incomplete_tasks)}")
+    architecture_failures = []
+    for task in tasks:
+        out_of_scope = files_within_write_scope(story, task.files)
+        if out_of_scope:
+            architecture_failures.append(f"{task.task_id} files outside write_scope: {', '.join(out_of_scope)}")
+    if architecture_failures:
+        failures.extend(architecture_failures)
     missing_expected = missing_files(root, expected_file_artifacts(story.body))
     if missing_expected:
-        failures.append(f"missing expected artifacts: {', '.join(missing_expected)}")
+        failures.append(f"missing affected files: {', '.join(missing_expected)}")
     evidence = evidence_section(story.body)
+    missing_coverage = []
     if story.story_id.startswith("SP-") or str(story.meta.get("type", "")).upper() == "SPIKE":
         missing_deliverables = [item for item in spike_deliverables(story) if item not in evidence]
         if missing_deliverables:
             failures.append(f"deliverables without evidence: {', '.join(missing_deliverables)}")
+            missing_coverage.extend(missing_deliverables)
     else:
         missing_ac = [ac_id for ac_id in acceptance_criteria_ids(story.body) if ac_id not in evidence]
         if missing_ac:
             failures.append(f"acceptance criteria without evidence: {', '.join(missing_ac)}")
+            missing_coverage.extend(missing_ac)
     verify_failures = run_story_verify_commands(root, story, timeout=verify_timeout)
     if verify_failures:
         failures.append("verify failed: " + "; ".join(verify_failures[:3]))
+    story.body = sync_coverage_checklists(story.body)
+    story.body = sync_definition_of_done(
+        story.body,
+        {
+            "All acceptance criteria are covered": not missing_coverage,
+            "All tasks are complete": bool(tasks) and not incomplete_tasks,
+            "Every verify command passed": not verify_failures,
+            "Affected files exist": not missing_expected,
+            "Architecture gates pass": not architecture_failures,
+            "No open QA bugs remain": not has_open_bugs,
+        },
+    )
     return failures
 
 

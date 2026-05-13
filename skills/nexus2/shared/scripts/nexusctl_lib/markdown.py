@@ -106,8 +106,68 @@ def evidence_section(body: str) -> str:
     return extract_section(body, "Execution Evidence")
 
 
+def evidence_coverage_ids(body: str) -> list[str]:
+    return sorted(set(re.findall(r"\b(?:AC|DEL)-\d+\b", evidence_section(body))))
+
+
+def sync_coverage_checklists(body: str) -> str:
+    covered = set(evidence_coverage_ids(body))
+    body = set_checklist_ids(body, "Acceptance Criteria", covered)
+    body = set_checklist_ids(body, "Deliverables", covered)
+    return body
+
+
+def set_checklist_ids(body: str, heading: str, completed_ids: set[str]) -> str:
+    section = extract_section(body, heading)
+    if not section:
+        return body
+    pattern = re.compile(r"^(\s*-\s+\[)[ xX](\]\s+((?:AC|DEL)-\d+)\b.*)$")
+    changed = False
+    lines = []
+    for line in section.splitlines():
+        match = pattern.match(line)
+        if not match:
+            lines.append(line)
+            continue
+        prefix, suffix, item_id = match.groups()
+        marker = "x" if item_id in completed_ids else " "
+        next_line = f"{prefix}{marker}{suffix}"
+        changed = changed or next_line != line
+        lines.append(next_line)
+    return replace_section(body, heading, "\n".join(lines)) if changed else body
+
+
+def sync_definition_of_done(body: str, checks: dict[str, bool]) -> str:
+    section = extract_section(body, "Definition Of Done")
+    if not section:
+        return body
+    normalized_checks = {normalize_checklist_text(key): value for key, value in checks.items()}
+    pattern = re.compile(r"^(\s*-\s+\[)[ xX](\]\s+)(.*)$")
+    changed = False
+    lines = []
+    for line in section.splitlines():
+        match = pattern.match(line)
+        if not match:
+            lines.append(line)
+            continue
+        prefix, suffix, text = match.groups()
+        key = normalize_checklist_text(text)
+        if key not in normalized_checks:
+            lines.append(line)
+            continue
+        marker = "x" if normalized_checks[key] else " "
+        next_line = f"{prefix}{marker}{suffix}{text}"
+        changed = changed or next_line != line
+        lines.append(next_line)
+    return replace_section(body, "Definition Of Done", "\n".join(lines)) if changed else body
+
+
+def normalize_checklist_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().rstrip(".").lower()
+
+
 def expected_file_artifacts(body: str) -> list[str]:
-    section = extract_section(body, "Expected Artifacts")
+    section = extract_section(body, "Affected Files")
     return [
         value
         for value in (match.group(1).strip() for match in re.finditer(r"file:\s*`([^`]+)`", section))

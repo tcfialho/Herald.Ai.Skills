@@ -72,7 +72,7 @@ def audit_story(root: Path, story: Story) -> list[str]:
     if not tasks:
         errors.append(f"{story.story_id}: missing tasks")
     if not expected_file_artifacts(story.body):
-        errors.append(f"{story.story_id}: missing expected artifacts")
+        errors.append(f"{story.story_id}: missing affected files")
 
     for task in tasks:
         if not task.verify_cmd or task.verify_cmd == "TBD":
@@ -90,7 +90,7 @@ def audit_story(root: Path, story: Story) -> list[str]:
     if story.status in ("QA", "DONE"):
         missing_expected = missing_files(root, expected_file_artifacts(story.body))
         if missing_expected:
-            errors.append(f"{story.story_id}: missing expected artifacts: {', '.join(missing_expected)}")
+            errors.append(f"{story.story_id}: missing affected files: {', '.join(missing_expected)}")
         evidence = evidence_section(story.body)
         if is_spike:
             missing_deliverables = [

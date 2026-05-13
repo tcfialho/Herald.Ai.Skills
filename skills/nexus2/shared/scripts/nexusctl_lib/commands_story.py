@@ -93,7 +93,7 @@ def cmd_story_submit_qa(args: argparse.Namespace) -> None:
         raise NexusError("story has open QA bugs")
     missing_expected = missing_files(root, expected_file_artifacts(story.body))
     if missing_expected:
-        raise NexusError(f"missing expected artifacts: {', '.join(missing_expected)}")
+        raise NexusError(f"missing affected files: {', '.join(missing_expected)}")
     evidence = evidence_section(story.body)
     is_spike = story.story_id.startswith("SP-") or str(story.meta.get("type", "")).upper() == "SPIKE"
     if is_spike:

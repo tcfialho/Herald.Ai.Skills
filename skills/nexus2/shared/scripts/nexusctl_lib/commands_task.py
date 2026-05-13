@@ -3,6 +3,7 @@ import subprocess
 
 from .commands_base import resolve_root
 from .errors import NexusError
+from .markdown import sync_coverage_checklists
 from .evidence import (
     append_bug_evidence,
     append_evidence,
@@ -90,6 +91,7 @@ def cmd_task_complete(args: argparse.Namespace) -> None:
 
     story.body = update_task_marker(story.body, args.task_id, "completed")
     append_evidence(story, task, verify_cmd, exit_code, task.files, args.covers or task.covers, args.note or f"log: {log}")
+    story.body = sync_coverage_checklists(story.body)
     remaining = [item for item in parse_tasks(story.body) if item.status != "completed"]
     story.meta["current_task"] = remaining[0].task_id if remaining else None
     renew_lease(story)

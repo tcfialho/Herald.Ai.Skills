@@ -32,7 +32,9 @@ Copied from `nexus/architecture.md`. Include only applicable Herald rules and te
 
 - [ ] AC-001: GIVEN TBD WHEN TBD THEN TBD.
 
-## Expected Artifacts
+## Affected Files
+
+Concrete paths the story creates **or** modifies. QA validates each path exists at approval time. List every file touched, whether new or pre-existing.
 
 - file: `TBD`
 
@@ -51,7 +53,7 @@ Copied from `nexus/architecture.md`. Include only applicable Herald rules and te
 - [ ] All acceptance criteria are covered.
 - [ ] All tasks are complete.
 - [ ] Every verify command passed.
-- [ ] Expected artifacts exist.
+- [ ] Affected files exist.
 - [ ] Architecture gates pass.
 - [ ] No open QA bugs remain.
 

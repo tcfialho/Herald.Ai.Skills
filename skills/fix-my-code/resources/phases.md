@@ -43,12 +43,85 @@ phase_2:
     - create_matrix: 'Build: hypothesis_id | root_class | hypothesis | evidence_for (with source_class per entry) | evidence_against | falsification_test | falsification_evidence | confidence [0-1] | status. Classes: code, config, dependency, data, infra, integration, process.'
     - validate_matrix: 'Verify columns and status rules per evidence_matrix_contract.'
     - verify_changes: 'git log --oneline -10, git diff HEAD~3. Focus: deps, config, infra.'
-    - reproduce: 'If safe and reproducible → run failing command, capture output.'
+    - reproduce: 'Attempt reproduction with the strongest safe, non-mutating technique from evidence_ladder. If reproduction is not possible, explicitly record why and continue evidence-only; do not silently skip.'
+    - symptom_boundary:
+        rule: 'Before deep investigation, lock the exact symptom boundary so the investigation does not drift into adjacent components or metrics.'
+        capture:
+          - 'user_visible_symptom: the exact thing the user saw, in their terms'
+          - 'exact_target: the specific value, behavior, endpoint, job, screen, file, row, or component under complaint'
+          - 'comparison_reference: what the user or system compares it against, if any'
+          - 'scope_exclusions: adjacent areas NOT to investigate unless evidence links them to exact_target'
+        on_drift: 'If a new component or metric becomes tempting to investigate, first prove linkage to exact_target or park it under Residual_Risks.'
+    - symptom_reality_gate:
+        rule: 'Before root-cause hypotheses, prove the symptom exists in the same category the user meant. Do not convert visual/UX complaints into functional failures, or ambiguous complaints into invented defects.'
+        capture:
+          - 'user_words: exact phrase or screenshot/image detail from the user'
+          - 'claimed_failure_type: functional | visual_ux | copy | performance | state | integration | unknown'
+          - 'observed_artifact: command, API response, DOM/CSS/static asset inspection, browser automation result, probe output, log, screenshot, or user-provided image'
+          - 'expected_vs_actual: what should happen vs what was actually observed'
+          - 'category_verdict: confirmed_defect | confirmed_visual_or_ux_issue | no_defect_confirmed | misframed_symptom | insufficient_evidence'
+        decisions:
+          - 'confirmed_defect → continue RCA normally.'
+          - 'confirmed_visual_or_ux_issue → continue RCA, but root_class must stay visual_ux/design_asset/rendering unless evidence links to functional state.'
+          - 'no_defect_confirmed → stop root-cause expansion; Phase 4 emits diagnostic-only No-go with evidence and no Fix_Proposal.'
+          - 'misframed_symptom → state the corrected symptom plainly; only propose a fix for the corrected symptom if independently confirmed.'
+          - 'insufficient_evidence → ask for the smallest missing artifact or perform the next safe evidence_ladder step; do not invent a fix.'
+        on_correction: 'If later evidence changes the failure type, log [AUTO-CORRECTION] with the old and new category_verdict.'
+    - evidence_ladder:
+        rule: 'Prefer evidence closest to the failing contract and least dependent on human visual interpretation. Screenshot/pixel evidence is allowed, but for UI it is late unless the complaint is inherently visual.'
+        order_by_target:
+          - 'Build/CLI/runtime error: failing command or test output → exact code path/read → minimal repro script.'
+          - 'API/backend/data: direct API call or function invocation → raw source value (DB/file/cache/queue) → logs/traces with timestamp correlation.'
+          - 'Web UI behavior/state: DOM/state inspection and event handlers → API/network calls → browser automation (CDP/Playwright/Selenium) → screenshot/pixel comparison.'
+          - 'Desktop/webview UI: HTML/CSS/JS/static asset inspection → framework/window API probe or mock → browser/webview automation if available → screenshot/pixel comparison.'
+          - 'CSS/SVG/icon/layout: asset/CSS geometry and computed dimensions → DOM/rendered box metrics → screenshot/pixel comparison.'
+          - 'Timing/session/window bugs: same-run state comparison → process/session identity → clean restart behavior → small probe with timestamps.'
+        screenshot_policy:
+          - 'Use screenshot early only when the user provides an image or the complaint is specifically visual/geometry/color/icon affordance.'
+          - 'If screenshot is used, pair it with a structural source when possible (DOM/CSS/SVG/code) so the fix targets cause, not just appearance.'
+        tooling_examples: ['curl/API call', 'unit/integration test', 'node/python mini-program', 'DOM/static HTML analysis', 'CDP/Playwright/Selenium', 'log query', 'screenshot/pixel diff']
+    - root_cause_routing_gate:
+        rule: 'Before broad source reading or external research, run the cheapest decisive comparison that routes the bug to the right class.'
+        when_required_ANY:
+          - 'User reports an observed output/value differing from another value/reference'
+          - 'Bug may involve UI/API response/reporting/caching/state transformation'
+          - 'Bug involves min/max/history/session/window/polling/timing/lifecycle'
+          - 'Multiple plausible branches exist: output/state vs transform/cache vs source/integration/data vs timing/window'
+        same_run_comparison:
+          - 'observed_output: what user sees or what external caller receives'
+          - 'immediate_upstream_value: nearest internal value before display/return/persist, if accessible'
+          - 'raw_source_value: original source read from DB/API/file/sensor/queue/config before transformations, if accessible'
+          - 'reference_value: external/authoritative comparison value, if one exists'
+        routing:
+          - 'observed_output != immediate_upstream_value → output/UI/serialization/state/lifecycle branch first'
+          - 'immediate_upstream_value != raw_source_value → transform/cache/aggregation/persistence branch first'
+          - 'raw_source_value != reference_value → source/integration/data/provider branch first'
+          - 'only min/max/history/window differs → latch/window/persistence/polling branch first'
+        probe_order:
+          - 'same-run raw vs observed comparison'
+          - 'process/session/cache identity check'
+          - 'minimal reproduction of the exact symptom using evidence_ladder'
+          - 'external docs/source lookup'
+          - 'broad scan or deep search'
+        branch_discipline: 'Do not deep-dive a lower-priority branch until the routed branch is contradicted or evidence links the branches.'
+    - stateful_runtime_gate:
+        when_required_ANY:
+          - 'Symptom can persist across sessions or restarts'
+          - 'System has background process, tray app, worker, daemon, single-instance guard, queue consumer, cache, browser session, or long-lived connection'
+          - 'Bug involves max/min/history/session/user-visible state'
+          - 'Timing, polling, concurrency, or lifecycle is plausible'
+        must_verify:
+          - 'process/session identity and start time/generation id'
+          - 'clean restart behavior when safe'
+          - 'cache/persistence source for the suspect value'
+          - 'whether close/reopen actually creates a new runtime instance'
+        routing_effect: 'If clean runtime state differs from dirty runtime state, prioritize lifecycle/cache/latch hypotheses before source/provider hypotheses.'
     - diagnostic_scripts:
         when_required_ANY:
           - 'Hypothesis lacks direct evidence (no stack trace pointing line, no visible diff touching the code path)'
           - '2+ competing hypotheses with no tiebreaker via static reading'
           - 'Intermittent symptom / timing / runtime state'
+          - 'symptom_reality_gate cannot classify the failure type from static inspection and existing artifacts'
         when_skip_OK_ALL_REQUIRED:
           - 'Stack trace names the exact line of the hypothesis (file:line precision, not file-level)'
           - 'Recent diff (last 10 commits) touches that EXACT line, not just the file'
@@ -77,7 +150,7 @@ phase_2:
     - checkpoint: 'Optional: hypothesis status, strongest/weakest, blocking gaps.'
   validation:
     self_refine: { max: 2, log: '[SELF-REFINE] N: {weak} → {action}', rule: 'DIFFERENT remediation each.', on_exhaustion: prompt_user }
-    checks: ['Sources: Logs → Traces → Metrics (refine: try next fallback)', 'Matrix has required columns + ≥1 supported hypothesis (refine: re-examine for missed correlations)']
+    checks: ['Sources selected from evidence_ladder, with screenshot/pixel used only when justified', 'Symptom boundary captured and scope drift parked or evidence-linked', 'Symptom_reality_gate captured claimed_failure_type + observed_artifact + category_verdict', 'Root cause routing gate executed when applicable, with branch chosen by same-run comparison', 'Stateful runtime gate executed when applicable before blaming source/provider', 'Matrix has required columns + ≥1 supported hypothesis OR diagnostic-only category_verdict explains why no fix is proposed']
     error: '>15min on hypothesis → park, next P-level'
 ```
 
@@ -87,10 +160,10 @@ phase_2:
 phase_3:
   actions:
     - diagnostic_artifacts: 'If useful, temp scripts in `.temp/` for programmatic verification.'
-    - decompose: 'OR/AND tree by root_class. "Why?" recursively until fixable defect.'
+    - decompose: 'OR/AND tree by root_class. "Why?" recursively until fixable defect. If Phase 2 category_verdict is no_defect_confirmed or insufficient_evidence, do not fabricate a fixable defect.'
     - multiple_roots: 'If multiple contributing factors → track all.'
     - score: 'Confidence [0.00-1.00] per hypothesis. Factors: supporting signals, contradictions, temporal correlation, falsification.'
-    - cross_reference: 'Every candidate role-checked against root_cause_role_eligibility: [PRIMARY ROOT] backed by supported hypothesis; [SECONDARY ROOT] or [CONTRIBUTOR] backed by supported or supported_partial per evidence_matrix_contract. ≥1 falsified when applicable; no unresolved contradictions.'
+    - cross_reference: 'Every candidate role-checked against root_cause_role_eligibility: [PRIMARY ROOT] backed by supported hypothesis; [SECONDARY ROOT] or [CONTRIBUTOR] backed by supported or supported_partial per evidence_matrix_contract. ≥1 falsified when applicable; no unresolved contradictions. For confirmed_visual_or_ux_issue, ensure root_class remains visual_ux/design_asset/rendering unless evidence proves functional state failure.'
     - deliberate_selection:
         visibility: internal_reasoning
         trigger_ANY:
@@ -117,7 +190,7 @@ phase_4:
   actions:
     - render_report: 'Emit unified report per output_contract (see resources/output-contract.md).'
     - validation_artifact:
-        rule: 'A validation artifact is mandatory before emitting Fix_Proposal. Use the strongest type available in the context. Weaker types require justification.'
+        rule: 'A validation artifact is mandatory before emitting Fix_Proposal. For diagnostic-only outcomes, the symptom_reality_gate observed_artifact is mandatory instead. Use the strongest type available in the context. Weaker types require justification.'
         types_in_order_of_strength:
           - '1. automated test (when test infra exists and bug is testable in code)'
           - '2. build / typecheck / lint command (compilation, type, dependency, analyzer errors)'
@@ -125,10 +198,11 @@ phase_4:
           - '4. objective behavioral reproduction (numbered steps, wrong result before, expected result after — for UI, CSS, manual flows)'
           - '5. log comparison (only when local reproduction is impossible — requires specific string/regex pattern, NOT "logs look better")'
         rules:
-          - 'Artifact must FAIL or show the wrong result PRE-FIX, captured as evidence.'
-          - 'Artifact must target the CONFIRMED CAUSE, not only the surface symptom. "Error disappeared" / "returns 200 now" is NOT sufficient. Example: if the cause is "middleware double-decodes the token", the artifact exercises that double-decode path explicitly.'
+          - 'For Fix_Proposal: artifact must FAIL or show the wrong result PRE-FIX, captured as evidence.'
+          - 'For Fix_Proposal: artifact must target the CONFIRMED CAUSE, not only the surface symptom. "Error disappeared" / "returns 200 now" is NOT sufficient. Example: if the cause is "middleware double-decodes the token", the artifact exercises that double-decode path explicitly.'
+          - 'For no_defect_confirmed or insufficient_evidence: artifact must show the exact checked symptom, the observed result, and why that blocks a fix proposal.'
           - 'If using type 4 or 5, log [AUTO-DECISION] validation_degraded reason={why types 1-3 do not apply}.'
-        on_failure_to_produce: 'No valid artifact can be produced → cause is not understood precisely enough. Return to Phase 2/3. Do NOT emit Fix_Proposal.'
+        on_failure_to_produce: 'No valid artifact can be produced → cause or symptom reality is not understood precisely enough. Return to Phase 2/3. Do NOT emit Fix_Proposal.'
         location: 'Tests go under the existing test tree. Repro scripts and probes go under .temp/. Reference the artifact path explicitly in the Fix_Proposal.'
     - validate_fix_internally:
         visibility: internal_only
@@ -141,8 +215,8 @@ phase_4:
           5. Fits codebase? (patterns, conventions, readable without explanation?)
           6. Free of validation prerequisites? Does the fix require user/AI to first run something to confirm the cause? → demote, return to Phase 2 for probe.
           Weak answer → switch to stronger alternative. None survives → demote to Residual_Risks or No-go.
-  validation: ['Root cause backed by independent evidence', 'No contradictions unexplained', 'Causal chain complete', 'Fix passed 5-Whys (fail: revise)', 'Validation artifact exists, targets the cause, shows wrong result pre-fix (fail: BLOCK, return to Phase 2/3)']
-  output: 'Emit per output_contract. Final line: "Do you confirm the execution of this Fix_Proposal?"'
+  validation: ['Symptom_reality_gate artifact exists', 'For fix proposals: root cause backed by independent evidence', 'No contradictions unexplained', 'For fix proposals: causal chain complete', 'For fix proposals: fix passed 5-Whys (fail: revise)', 'For fix proposals: validation artifact exists, targets the cause, shows wrong result pre-fix (fail: BLOCK, return to Phase 2/3)']
+  output: 'Emit per output_contract. Final confirmation line only when Fix_Proposal_Status=pending_confirmation; diagnostic-only outcomes end with the evidence-backed No-go/clarification next step.'
 ```
 
 ## Phase 5: Solution & Prevention

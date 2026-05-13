@@ -5,39 +5,43 @@ Authoritative definition of the diagnostic report format. Phase 4 output MUST fo
 ```yaml
 output_contract:
   section_order: [Incident, Hypotheses, Root_Cause, Fix_Proposal, Residual_Risks, Verification_and_Validation, Prevention, Decision]
-  closing_line: '"Do you confirm the execution of this Fix_Proposal?"'
+  diagnostic_outcomes: [confirmed_defect, confirmed_visual_or_ux_issue, no_defect_confirmed, misframed_symptom, insufficient_evidence]
+  closing_line: 'Use "Do you confirm the execution of this Fix_Proposal?" only when Fix_Proposal_Status=pending_confirmation. For diagnostic-only outcomes, close with the concrete No-go or clarification next step instead.'
   formatting:
     - 'Incident: markdown table | Field | Value |. No prose between sections.'
     - 'Hypotheses and Root_Cause: wrap ASCII trees in ```text blocks to preserve ├── └── │ characters.'
     - 'Fix_Proposal, Residual_Risks, Prevention: bullet lists (- item).'
     - 'Verification_and_Validation: bullet list (Plan + Expected outcome).'
-    - 'Decision: Fix_Proposal_Status (pending_confirmation|confirmed|rejected), Decision (Go/No-go), Next_Step.'
+    - 'Decision: Diagnostic_Outcome, Fix_Proposal_Status (pending_confirmation|confirmed|rejected|not_applicable|needs_clarification), Decision (Go/No-go), Next_Step.'
 
   quality:
-    Incident: 'Symptom=what user sees not interpretation, Impact=scope+degree, Environment=OS/runtime/versions, First Seen=trigger correlation, Frequency=reproducibility, Probable Cause=evidence-based guess refined in Root_Cause'
+    Incident: 'Symptom=what user sees not interpretation, Impact=scope+degree, Environment=OS/runtime/versions, First Seen=trigger correlation, Frequency=reproducibility, Probable Cause=evidence-based guess refined in Root_Cause, Failure Type=claimed_failure_type from symptom_reality_gate'
     Hypotheses: |
       ASCII tree: Root "PROBLEM: ...", 1st level [AND]/[OR], 2nd level [CAUSE 1]..[CAUSE N] (maximum limit of 5).
       CRITICAL: You MUST generate EXACTLY as many hypotheses as necessary to exhaust all evidence-backed possibilities, up to a strict maximum of 5. Whether it is 1 or 5, every single plausible angle MUST be mapped.
       Inside causes: FREE MIX of UPPERCASE-labeled lines (BEFORE:, AFTER:, EFFECT:, STATUS:, etc.) and plain descriptive lines. Labels open-ended — invent as needed.
       Each cause must be independently falsifiable with forensic detail. Cite specific log lines, config values, code paths.
       Confidence [0.00-1.00] per hypothesis. Include What_Changed. Rank by likelihood if all low.
+      If Diagnostic_Outcome is no_defect_confirmed or insufficient_evidence, list only the evidence-backed possibilities that were checked; do not invent a fixable cause just to fill the tree.
     Root_Cause: |
       TWO parts: PART 1=ASCII tree (root=short problem label, branches=[PRIMARY ROOT] and ONLY IF APPLICABLE [SECONDARY ROOT] / [CONTRIBUTOR], same label/text mix as Hypotheses).
       PART 2=Declarative summary ("PRIMARY ROOT CAUSE: CAUSE N" + bullet WHY, optionally one line per secondary/contributor IF they exist).
       Must reference evidence that confirms cause AND excludes alternatives. Chain must be complete. Every [PRIMARY ROOT] traces to a supported hypothesis; [SECONDARY ROOT] and [CONTRIBUTOR] may trace to supported or supported_partial per evidence_matrix_contract.root_cause_role_eligibility. Contradictions resolved or flagged.
+      If no defect is confirmed, say "NO ROOT CAUSE CONFIRMED" and cite the artifact(s) that contradicted or failed to reproduce the claimed defect.
     Fix_Proposal:
-      must: 'Each fix tied to confirmed root cause. Include rollback/containment path + trigger criteria. Note residual vulnerability. Deterministic and ready-to-apply on approval — every step is a code/config change with file path + diff intent.'
+      must: 'Each fix tied to confirmed root cause. Include rollback/containment path + trigger criteria. Note residual vulnerability. Deterministic and ready-to-apply on approval — every step is a code/config change with file path + diff intent. For no_defect_confirmed or insufficient_evidence, write a single bullet stating that no code/config fix is proposed and why.'
       forbidden_content:
         - 'Hypothesis validation steps ("first verify if X")'
         - 'Conditional branches dependent on unconfirmed cause ("if it turns out to be Y, then...")'
         - 'User manual probe as prerequisite ("user runs script and reports back")'
         - 'Phased fix where step N depends on step N-1 producing diagnostic data after approval'
         - 'Mini-program creation for hypothesis confirmation (those belong to Phase 2, already done)'
+        - 'Functional fix for a complaint that symptom_reality_gate classified as visual_ux unless evidence linked it to functional state'
       rationale: 'Approval gate is binary on a complete fix. Validation of cause happens in Phase 2/3. Validation of FIX happens in Verification_and_Validation (post-apply).'
     Residual_Risks: 'Impact assessment + probability — not generic platitudes.'
     Verification_and_Validation: 'Objective measurable criteria: how do we KNOW the fix worked?'
     Prevention: 'Controls tied to root cause class — linter rules, type constraints, alerts, tests, process gates.'
-    Decision: 'Explicit user approval required before Phase 5.'
+    Decision: 'Explicit user approval required before Phase 5 only when Fix_Proposal_Status=pending_confirmation. Diagnostic-only outcomes must use Decision=No-go and a concrete next step.'
 
   supplementary: ['Evidence_Matrix (full)', 'Sources_Consulted', 'Sources_Unavailable + confidence impact', 'Telemetry']
 
@@ -50,6 +54,7 @@ output_contract:
     | Environment | {environment} |
     | First Seen | {first_seen} |
     | Frequency | {frequency} |
+    | Failure Type | {claimed_failure_type} |
     | Probable Cause | {probable_cause} |
 
     ## Hypotheses
@@ -92,7 +97,8 @@ output_contract:
     ## Prevention
     - {control}
     ## Decision
-    - Fix_Proposal_Status: pending_confirmation
+    - Diagnostic_Outcome: {confirmed_defect|confirmed_visual_or_ux_issue|no_defect_confirmed|misframed_symptom|insufficient_evidence}
+    - Fix_Proposal_Status: {pending_confirmation|not_applicable|needs_clarification}
     - Decision: Go / No-go
     - Next_Step: {step}
 ```
@@ -101,7 +107,7 @@ output_contract:
 evidence_matrix_contract:
   columns: [hypothesis_id, root_class, hypothesis, evidence_for, evidence_against, falsification_test, falsification_evidence, confidence_score_0_to_1, status]
   status_values: [supported, supported_partial, refuted, open, disproven]
-  source_classes: [log, code_read, diff, test_executed, build_or_typecheck, metric, config, filesystem, reproduced_behavior, external_doc]
+  source_classes: [log, code_read, diff, test_executed, build_or_typecheck, metric, config, filesystem, reproduced_behavior, external_doc, api_response, dom_inspection, browser_automation, screenshot_or_pixel, probe_script, static_asset]
   rules:
     - 'root_cause_role_eligibility:
         [PRIMARY ROOT] requires status=supported AND evidence_for >= 2 AND independent_sources >= 2.

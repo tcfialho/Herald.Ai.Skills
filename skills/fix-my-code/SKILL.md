@@ -23,9 +23,9 @@ instruction_hierarchy:
 ```yaml
 auto_activation:
   mode: subjective_high_recall
-  signals: ['Functional mismatch: "not right", "unexpected result"', 'Failure: "error", "crash", "broke", "unstable"', 'Flow blocked: "won''t load", "hanging", "frozen"', 'Evidence: "stack trace", "build failing", "timeout"', 'Post-change regression']
+  signals: ['Functional mismatch: "not right", "unexpected result"', 'Visual/UX defect in implemented UI: icon state, misleading affordance, overlap, clipped text, broken layout, wrong visible state', 'Failure: "error", "crash", "broke", "unstable"', 'Flow blocked: "won''t load", "hanging", "frozen"', 'Evidence: "stack trace", "build failing", "timeout"', 'Post-change regression']
   action: 'Open diagnostic directly. Prefer recall over precision.'
-  exclude: 'Style, docs, naming, branding, architecture planning without runtime failure.'
+  exclude: 'Pure taste/style preference, docs, naming, branding, architecture planning without runtime or implemented-UI defect.'
 ```
 
 ```yaml
@@ -77,9 +77,9 @@ workflow:
   output_reference: 'Read [output-contract.md](resources/output-contract.md) before Phase 4 for the exact report format, quality criteria, and output skeleton.'
   phase_summaries:
     phase_1: 'Validate context, classify severity, discover MCP servers, inspect repository, probe external sources, build topology map (1-hop callers/callees/config/state/integrations) when symptom does not localize. IF P0/P1 suspected: propose temporally-gated containment with concrete action and request Y/N — investigation proceeds in parallel.'
-    phase_2: 'Build hypothesis matrix, reproduce problem, capture baseline, collect signals with Think→Act→Observe, analyze temporal correlation. ANY state-mutating probe requires paired teardown executed before Phase 4.'
-    phase_3: 'Decompose causal chain (OR/AND tree + 5 Whys), score hypotheses, cross-reference matrix, deliberate root cause selection (Tree of Thoughts triggered by relative gap < 0.20 OR second_confidence >= 0.50).'
-    phase_4: 'Render report per output_contract. Run internal 5-Whys validation on Fix_Proposal BEFORE emitting. Validation artifact (strongest available type) MUST exist, target the cause, show wrong result pre-fix. Ask for user confirmation.'
+    phase_2: 'Build hypothesis matrix, lock symptom boundary, run symptom_reality_gate, choose the strongest non-mutating evidence technique, reproduce or explicitly classify why reproduction is unavailable, capture baseline, collect signals with Think→Act→Observe, analyze temporal correlation. ANY state-mutating probe requires paired teardown executed before Phase 4.'
+    phase_3: 'Decompose causal chain (OR/AND tree + 5 Whys), score hypotheses, cross-reference matrix, deliberate root cause selection (Tree of Thoughts triggered by relative gap < 0.20 OR second_confidence >= 0.50). If symptom_reality_gate produced no_defect_confirmed, misframed_symptom, or insufficient_evidence, do not invent a root cause.'
+    phase_4: 'Render report per output_contract. Run internal 5-Whys validation on Fix_Proposal BEFORE emitting. Validation artifact (strongest available type) MUST exist, target the cause, show wrong result pre-fix. Ask for user confirmation only when Fix_Proposal_Status=pending_confirmation.'
     phase_5: 'Wait for explicit confirmation. Implement fix tied to evidence. Validation artifact must show expected result after fix (binding gate); suite must not regress. Add preventive controls.'
     phase_6: 'On fix failure: compare error before/after, classify as same_error | different_error | build_or_suite_regression, apply prescribed action. Never patch blindly without new evidence. Escalate after 3 iterations.'
 ```
@@ -88,7 +88,7 @@ workflow:
 
 ```yaml
 anti_patterns:
-  never: ['Infer root cause from single signal', 'Skip report to jump to fix', 'Ignore contradictory evidence', 'Reproduce without baseline', 'Production code change during Phase 1/2/4 (verification artifacts in .temp/ or test tree are allowed)', 'P0/P1 suspected without proposing temporally-gated containment in parallel with investigation', 'Propose rollback for commits/changes whose time window does not match first_seen', 'Autonomous decision without [AUTO-DECISION]', 'Root cause selection without deliberation when multiple candidates', 'Repeat same self-correction', 'Re-investigate confirmed findings', 'Silently discard conflicting rule', 'Same cognitive stance across phases', 'Fix_Proposal with hypothesis-validation steps or user-run manual probes', 'Phased solution depending on data the user collects after approval', 'Emit Fix_Proposal without a validation artifact that targets the cause and shows wrong result pre-fix', 'Use a weaker validation type without justifying why stronger ones do not apply', 'Accept "symptom disappeared" / "returns 200 now" as sufficient validation', 'Skip probe based on partial when_skip_OK conditions (all four required)', 'Leave probe-mutated state un-torn-down before Phase 4', 'Patch blindly after fix failure without classifying same/different/regression', 'Mark hypothesis status=refuted without falsification_evidence populated', 'Count evidence_for entries from the same source class as independent']
+  never: ['Infer root cause from single signal', 'Skip report to jump to fix', 'Ignore contradictory evidence', 'Reproduce without baseline', 'Treat ambiguous user wording as a functional failure before symptom_reality_gate proves the failure type', 'Invent a code/config fix when the symptom is not confirmed', 'Use screenshot as first evidence when DOM/API/code/test/probe evidence can answer the question more directly', 'Production code change during Phase 1/2/4 (verification artifacts in .temp/ or test tree are allowed)', 'P0/P1 suspected without proposing temporally-gated containment in parallel with investigation', 'Propose rollback for commits/changes whose time window does not match first_seen', 'Autonomous decision without [AUTO-DECISION]', 'Root cause selection without deliberation when multiple candidates', 'Repeat same self-correction', 'Re-investigate confirmed findings', 'Silently discard conflicting rule', 'Same cognitive stance across phases', 'Fix_Proposal with hypothesis-validation steps or user-run manual probes', 'Phased solution depending on data the user collects after approval', 'Emit Fix_Proposal without a validation artifact that targets the cause and shows wrong result pre-fix', 'Use a weaker validation type without justifying why stronger ones do not apply', 'Accept "symptom disappeared" / "returns 200 now" as sufficient validation', 'Skip probe based on partial when_skip_OK conditions (all four required)', 'Leave probe-mutated state un-torn-down before Phase 4', 'Patch blindly after fix failure without classifying same/different/regression', 'Mark hypothesis status=refuted without falsification_evidence populated', 'Count evidence_for entries from the same source class as independent']
 ```
 
 ```yaml
@@ -96,14 +96,16 @@ success_gate:
   pre_fix_gate:
     description: 'Must hold BEFORE Phase 4 emits Fix_Proposal and asks for user confirmation.'
     criteria:
-      - 'Matrix has ≥1 supported hypothesis with ≥2 independent_sources'
-      - '[PRIMARY ROOT] is status=supported; any [SECONDARY ROOT] or [CONTRIBUTOR] follows role_eligibility; contradiction-free'
-      - 'falsification_evidence populated for every status=refuted'
+      - 'Symptom_reality_gate executed; output is confirmed_defect, confirmed_visual_or_ux_issue, no_defect_confirmed, misframed_symptom, or insufficient_evidence'
+      - 'If output is confirmed_defect or confirmed_visual_or_ux_issue: matrix has ≥1 supported hypothesis with ≥2 independent_sources'
+      - 'If output is no_defect_confirmed, misframed_symptom, or insufficient_evidence: report is diagnostic-only, Decision=No-go unless a corrected confirmed issue has its own Fix_Proposal'
+      - 'If a root cause is claimed: [PRIMARY ROOT] is status=supported; any [SECONDARY ROOT] or [CONTRIBUTOR] follows role_eligibility; contradiction-free'
+      - 'If hypotheses were tested: falsification_evidence populated for every status=refuted'
       - 'Deliberation used when relative gap < 0.20 or second_confidence >= 0.50'
-      - 'Validation artifact exists, targets the confirmed cause, shows wrong result PRE-FIX (captured as evidence)'
+      - 'For fix proposals: validation artifact exists, targets the confirmed cause, shows wrong result PRE-FIX (captured as evidence). For diagnostic-only reports: symptom_reality_gate artifact exists and explains why no fix is proposed'
       - 'Weaker validation types (4-5) justified explicitly when used'
       - 'Probe teardown executed for all state-mutating probes; baseline restored'
-      - 'Report with 8 sections in order; Decision: Fix_Proposal_Status=pending_confirmation, Go/No-go'
+      - 'Report with 8 sections in order; Decision: Fix_Proposal_Status reflects the diagnostic outcome'
       - 'Residual_Risks + Prevention documented (preventive control suggested per root cause class)'
       - 'Decisions logged [AUTO-DECISION]; self-refine attempted before escalating'
   post_fix_gate:

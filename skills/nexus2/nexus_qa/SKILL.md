@@ -1,6 +1,6 @@
 ---
 name: nexus2-qa
-description: Nexus 2.0 /qa QA stage. Use after /dev finishes every story. Runs a single end-of-DEV batch audit over every story in QA status, executes verify commands, validates AC/DEL coverage, expected artifacts, and architecture/design gates, then approves clean stories or returns bugs inside the original story file.
+description: Nexus 2.0 /qa QA stage. Use after /dev finishes every story. Runs a single end-of-DEV batch audit over every story in QA status, executes verify commands, validates AC/DEL coverage, affected files, and architecture/design gates, then approves clean stories or returns bugs inside the original story file.
 ---
 
 # Nexus 2.0 /qa
@@ -89,7 +89,7 @@ Do not loop these by hand to replace `qa run`.
 - `STORY-ID` is always `US-*`. Spike stories (`SP-*`) bypass QA entirely — they are closed to `DONE` directly by DEV via `nexusctl story submit-qa` because `submit-qa` already validates deliverables, evidence, and artifacts. QA never sees them.
 - Broader regression checks come from each story's verify commands, package/architecture-defined commands, and the cross-cutting smoke pass. `qa run` executes the per-story verify commands; the smoke pass exercises the running app against `spec.md` use cases.
 - Do not invent destructive or production-dependent regression checks. Prefer local deterministic commands and ephemeral test data.
-- A failure is any open QA bug, missing or unmet AC/DEL, missing expected artifact, failing verify command, failing smoke check, untested declared file, architecture violation, UI mismatch, or unrecorded assumption.
+- A failure is any open QA bug, missing or unmet AC/DEL, missing affected file, failing verify command, failing smoke check, untested declared file, architecture violation, UI mismatch, or unrecorded assumption.
 - QA may read `design.md` and `architecture.md` to audit consistency, but approval is based on each story's package, recorded evidence, and the smoke report.
 - Smoke tooling: pick the lightest tool that proves the use case. Prefer `curl` over a browser, browser-via-CDP over installing a new browser stack, embedded browser only when CDP is impossible. Never use `--headless` on Edge and never kill the user's Edge process (per global Browser Automation rules).
 - **Smoke scope is intentionally narrow.** Browser/CDP runs are token-expensive; restrict to the single most critical happy path (Smoke Budget Rules in step 5). Edge cases, error states, and non-critical flows belong to per-story verify commands, not the smoke pass. If a regression slips through, add a verify command to the relevant story rather than expanding the browser smoke.
@@ -101,11 +101,15 @@ Every story is validated against:
 - All ACs covered for `US-*`.
 - All `DEL-*` deliverables covered for `SP-*`.
 - All tasks have execution evidence.
+- All tasks are marked complete.
 - Verify commands pass.
-- Expected artifacts still exist at approval time.
+- Affected files still exist at approval time (covers files the story created **or** modified).
+- Task files remain inside the declared `write_scope` as the concrete architecture boundary gate.
 - UI stories match `design.md` and prototype intent.
 - Architecture gates respected.
 - No open QA bugs remain.
+
+`nexusctl qa run` and `nexusctl qa approve` are the source of truth for QA approval. They must validate evidence, task state, verify commands, affected files, open bugs, and write-scope architecture gates before approval. They also synchronize the `Definition Of Done` checklist from those real checks; QA must not mark DoD boxes manually or treat a checked DoD box as proof by itself.
 
 The cross-cutting smoke pass additionally validates (minimal scope per Smoke Budget Rules):
 

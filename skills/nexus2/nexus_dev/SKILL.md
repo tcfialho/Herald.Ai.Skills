@@ -111,6 +111,8 @@ Task completion must produce evidence in the story:
 
 Long logs may be stored under `.temp/nexus/cache/`.
 
+`nexusctl task complete` is the source of truth for DEV progress. It appends the evidence block and synchronizes AC/DEL checkboxes from the recorded `covers:` IDs. Do not manually mark AC/DEL checkboxes as complete unless correcting a `nexusctl` bug; a checked box without execution evidence is not valid progress.
+
 ## Completion Gate
 
 A story is not done by DEV until `nexusctl story submit-qa` accepts it.

@@ -52,9 +52,9 @@ Use `../shared/templates/spike_story_template.md`.
 
 ## Rules
 
-- Spike scripts and mini programs must be isolated under `spikes/SP-XXX/`.
-- Research reports must go under `docs/` (e.g. `docs/SP-001.md`). Create the folder if missing.
-- Any scratch artifact that is **not** a declared deliverable (throwaway probes, raw API dumps, intermediate parsing output, debug logs, draft notes, downloaded fixtures) must live under `.temp/` and be deleted before the spike closes. Never pollute `spikes/SP-XXX/` or `docs/` with non-deliverable noise. Global temp-files rule applies.
+- Spike scripts, mini programs, and the research report all live together under `nexus/spikes/SP-XXX/`. Create `nexus/spikes/` and the per-spike folder if missing.
+- The research report path is `nexus/spikes/SP-XXX/SP-XXX.md`. Do **not** write spike outputs under repo-root `spikes/` or `docs/` — both are deprecated for spike artifacts.
+- Any scratch artifact that is **not** a declared deliverable (throwaway probes, raw API dumps, intermediate parsing output, debug logs, draft notes, downloaded fixtures) must live under `.temp/` and be deleted before the spike closes. Never pollute `nexus/spikes/SP-XXX/` with non-deliverable noise. Global temp-files rule applies.
 - Spike does not implement production behavior unless explicitly converted into a feature story.
 - Spike deliverables use `DEL-XXX` IDs instead of functional ACs.
 - The final report must recommend one of: discard, implement, split into architecture decision, or create feature stories.
@@ -68,6 +68,7 @@ Use `../shared/templates/spike_story_template.md`.
 - Allowed experiments must name the boundaries: target tool/API, files allowed, commands allowed, data allowed, and what must not be changed.
 - Deliverables must be auditable artifacts, not vague outcomes. Examples: report path, experiment script path, benchmark output, captured command log, ADR draft, or follow-up `US-*` list.
 - Recommendation meanings: discard means no implementation; implement means create feature stories; create ADR means record a durable architecture decision; split into feature stories means research is complete but delivery needs multiple `US-*`.
+- Every `SP-*` backlog story **must propagate findings into the affected Use Cases**: identify each `nexus/spec.md` UC section and each `nexus/backlog/US-*.md` whose AC, context, or constraints change because of the spike result; list those paths under `## Affected Files` and `write_scope`; add a dedicated propagation task; add the `Definition Of Done` line `Affected Use Cases updated with spike findings`. See the **Spike Use-Case Propagation** rule in `nexus_backlog/SKILL.md` for the full contract.
 
 ## Proactive Spike Triggers (Mandatory)
 
@@ -112,6 +113,6 @@ Before finishing:
 
 1. `nexus/spec.md` has `## Spikes` with at least one `SP-*`.
 2. Every spike has objective, research question, experiments, deliverables, and decision options.
-3. If execution is needed, `SP-*` backlog stories exist with `Research Question`, `Deliverables`, tasks, verify commands, and write scope.
+3. If execution is needed, `SP-*` backlog stories exist with `Research Question`, `Deliverables`, tasks, verify commands, write scope, **and** the Spike Use-Case Propagation contract (affected UC paths listed under `## Affected Files`, write_scope coverage, dedicated propagation task, DoD line `Affected Use Cases updated with spike findings`).
 4. Run `nexusctl phase done spike`.
 5. Ask the user to call the next skill printed by `nexusctl phase done spike`.

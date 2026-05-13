@@ -1,6 +1,6 @@
 ---
 name: nexus2-backlog
-description: Nexus 2.0 /backlog scrum-master stage. Use when Nexus product, design, architecture, or spike artifacts must be converted into ordered, self-contained Markdown stories under nexus/backlog/. Produces US-* feature stories and SP-* spike stories with copied context, AC/DEL coverage, tasks, verify commands, expected artifacts, architecture gates, and Definition of Done.
+description: Nexus 2.0 /backlog scrum-master stage. Use when Nexus product, design, architecture, or spike artifacts must be converted into ordered, self-contained Markdown stories under nexus/backlog/. Produces US-* feature stories and SP-* spike stories with copied context, AC/DEL coverage, tasks, verify commands, affected files (paths created or modified), architecture gates, and Definition of Done.
 ---
 
 # Nexus 2.0 /backlog
@@ -37,7 +37,7 @@ Use `../shared/templates/story_template.md` as the base.
 - Do not turn a vague feature into a Spike only because details are missing. Ask the PO/spec skill to clarify business behavior first.
 - Copy design context only when the story touches UI as defined by `design.md`. For no-UI stories, write "No UI impact" in the story.
 - Complexity uses a small Fibonacci scale: 1 trivial, 2 small, 3 moderate, 5 complex, 8 ceiling. Anything above 8 triggers the **Story Split Decision (Objective)** tree below — do not eyeball, run the tree.
-- Expected artifacts must be concrete paths that QA can check. Prefer specific files; use directories only when the directory itself is the deliverable.
+- Affected Files must be concrete paths that QA can check. Includes files the story **creates or modifies** — list every path touched, whether new or pre-existing. Prefer specific files; use directories only when the directory itself is the deliverable.
 - `write_scope` must be the smallest set of paths the DEV needs. If a task needs a path outside scope, update the story before DEV edits it.
 - A technical AC belongs in the story only when it is local to that story. Shared quality expectations belong in `architecture.md`.
 
@@ -53,7 +53,7 @@ Each story must include:
 - Copied design context when the story has UI impact.
 - Copied architecture context.
 - Acceptance criteria.
-- Expected artifacts.
+- Affected Files (paths created or modified by the story).
 - Tasks.
 - Verify command per task.
 - Write scope.
@@ -62,6 +62,21 @@ Each story must include:
 - Empty execution evidence section.
 
 Spike stories use `SP-*`, `type: SPIKE`, `Research Question`, and `Deliverables` (`DEL-*`) instead of functional acceptance criteria.
+
+### Spike Use-Case Propagation (Mandatory for SP-*)
+
+A spike that resolves uncertainty changes downstream Use Cases. The SP-* story must carry the propagation into its own definition — DEV must finish the propagation before `submit-qa` closes the spike.
+
+When authoring an `SP-*` story:
+
+1. Identify every Use Case whose AC, context, constraints, or wording will likely change once the spike answers its research question. Look at `nexus/spec.md` (`## Use Cases`, `## Use Case Details`) and at any existing `nexus/backlog/US-*.md` that derive from those UCs.
+2. List each affected path under `## Affected Files` — both `nexus/spec.md` and every relevant `nexus/backlog/US-*.md`.
+3. Add those paths to `write_scope`. Without write-scope coverage, DEV cannot edit them.
+4. Include a dedicated task (e.g. `TASK-XXX: Propagate spike findings to affected Use Cases`) whose `files:` lists the same UC paths and whose `verify_cmd` re-runs `python ../shared/scripts/nexusctl.py docs validate`. This task `covers:` at least one `DEL-*` so its evidence is recorded.
+5. Add this `Definition Of Done` line: `- [ ] Affected Use Cases updated with spike findings (spec.md and every relevant US-*.md edited; paths listed under Affected Files).`
+6. If the spike result invalidates an existing `US-*`'s AC or scope, the propagation task must edit that `US-*` directly. If the spike result demands a brand-new US-*, record it as a recommendation in the spike report and create the new story in a follow-up `/backlog` run — do **not** silently fork new stories inside the spike.
+
+If the spike honestly cannot affect any UC (rare: pure infra spike with zero product surface change), record `- file: nexus/spec.md  # no UC change — rationale in DEL-001 report` and explain the no-change decision in the report so QA/audit can verify intent.
 
 ## Ordering
 
@@ -142,8 +157,8 @@ If a new AC changes product behavior, update `spec.md`. If it is purely technica
 Before finishing:
 
 1. Run `python ../shared/scripts/nexusctl.py docs validate` from the project root. If the path is different, resolve `nexusctl.py` first and run the equivalent command.
-2. Every feature story has ACs, tasks, verify commands, expected artifacts, and write scope.
-3. Every spike story has research question, deliverables, tasks, verify commands, expected artifacts, and write scope.
+2. Every feature story has ACs, tasks, verify commands, affected files, and write scope.
+3. Every spike story has research question, deliverables, tasks, verify commands, affected files (spike outputs **plus** every affected Use Case path), a propagation task, and write scope covering the affected UC paths.
 4. No story requires the DEV to read another Nexus document to implement it.
 5. Run `nexusctl phase done backlog`.
 6. Immediately invoke the `nexus_dev` skill via the Skill tool. Do not ask the user — the backlog artifact is deterministic and needs no human approval before development starts.

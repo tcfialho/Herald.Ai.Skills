@@ -1,2 +1,0 @@
-class NexusError(Exception):
-    pass

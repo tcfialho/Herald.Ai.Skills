@@ -16,7 +16,7 @@ to approve the plan.
 
 **Banner.** Every chat message from this skill starts with `# 📦 git-commit` as H1.
 
-**Silence.** Never narrate tool calls in chat — the IDE already shows them. Forbidden openers include "I will start…", "Checking…", "Running preflight…", "Collecting…", "Validating…", "Analyzing changes…". The plan-fix-revalidate loop is silent; surface it only if it fails after 3 attempts. Inside an adjustment or cancel flow (options 2/3 below), every agent turn still wears the banner — silence applies only to pure tool-call narration.
+**Silence.** Never narrate tool calls in chat — the IDE already shows them. Forbidden openers include "I will start…", "Checking…", "Running preflight…", "Collecting…", "Validating…", "Analyzing changes…". The plan-fix-revalidate loop is silent; surface it only if it fails after 3 attempts. Inside an adjustment or cancel flow (options 3–7 below), every agent turn still wears the banner — silence applies only to pure tool-call narration.
 
 **Large staging narration.** If `collect` returns `total_staged` ≥ the Slow-collect threshold (see Configuration), emit exactly one line before the plan:
 
@@ -40,7 +40,7 @@ No tables, no bullets, no sub-steps.
 
 ## Workflow
 
-Each step is one Python invocation. Steps 1–4, 6 and 9 are silent; the user only sees 5 (plan), 7 (commit result), 8 (push prompt, when applicable) and 10 (push result).
+Each step is one Python invocation. Steps 1–4, 6 and 9 are silent; the user only sees 5 (plan), 7 (commit result), 8 (push prompt — only on menu option 1 with a remote; option 2 pushes with no prompt) and 10 (push result).
 
 - [ ] 1. `preflight` — capture `author`, `branch`, `remote_info`.
 - [ ] 2. `collect` — capture `temp_dir` and `plan_path`.
@@ -49,8 +49,8 @@ Each step is one Python invocation. Steps 1–4, 6 and 9 are silent; the user on
 - [ ] 5. Present the plan; wait for approval.
 - [ ] 6. On approval: `execute --temp-dir <temp_dir> --confirm`.
 - [ ] 7. Report commits.
-- [ ] 8. If `remote_info.has_remote: true`, present the push prompt. Otherwise stop.
-- [ ] 9. On push approval: `push --remote <name> --branch <name> [--set-upstream]`.
+- [ ] 8. If menu option 2 was chosen, skip this prompt — go straight to step 9. Otherwise (option 1) and `remote_info.has_remote: true`, present the push prompt. No remote → stop.
+- [ ] 9. On push approval (option 1) or automatically (option 2): `push --remote <name> --branch <name> [--set-upstream]`.
 - [ ] 10. Report push result (or skip).
 
 **Where commands run.** `scripts/commit_tool.py` lives in this skill's folder — invoke it via the skill's absolute path with the **user's repo root as CWD** (where `.git/` lives). `collect` creates a fresh isolated directory via `tempfile.mkdtemp()` in the OS temp area (e.g. `%TEMP%\git-commit-…` on Windows, `/tmp/git-commit-…` on POSIX) and returns it as `temp_dir`. Carry that exact path through `--temp-dir <path>` in every subsequent subcommand. Never change CWD mid-flow; never guess `temp_dir`.
@@ -71,7 +71,7 @@ Every subcommand emits a JSON result on stdout and structured events on stderr (
 | Subcommand | Flags | Purpose | Notable exit codes |
 |---|---|---|---|
 | `preflight` | — | Validate repo + capture identity and remote topology | `0` ok · `10/11` error · `12` clean |
-| `collect` | `[--max-files N] [--max-diff-lines-per-file N] [--no-add]` | `git add -A` (unless `--no-add`), write per-file diffs, return `temp_dir`/`plan_path`/`diffs_dir` | `0` ok · `12` clean (nothing staged) |
+| `collect` | `[--max-files N] [--max-diff-lines-per-file N] [--no-add]` | `git add -A` (unless `--no-add`), write per-file diffs, return `temp_dir`/`plan_path`/`diffs_dir`. `staged_files` always lists **every** staged entry; `--max-files` caps only diff generation | `0` ok · `12` clean (nothing staged) |
 | `validate` | `--temp-dir <path>` | Check plan JSON vs regex + staging | `0` ok · `20` invalid |
 | `execute` | `--temp-dir <path> [--confirm] [--natural-timestamps]` | Dry-run unless `--confirm`; all commits share one timestamp (1-second resolution) | `0` ok · `30` commit failed · `31` pre-loop error |
 | `push` | `--remote <name> --branch <name> [--set-upstream]` | `git push`; never `--no-verify` | `0` ok · `50` push failed |
@@ -106,6 +106,8 @@ Every subcommand emits a JSON result on stdout and structured events on stderr (
 ### `collect`
 
 On staged changes, writes under `temp_dir`: `commit-plan.json` (the `plan_path` the agent must write) and `diffs/` (per-file truncated diffs, agent-only). When nothing is staged, returns `status: "clean"` (exit `12`) without creating a dir.
+
+`staged_files` always contains **every** staged entry (path + status), so no deletion is ever hidden — `total_staged` equals its length. `--max-files` only caps how many entries get a generated diff; entries beyond that budget (and all `D` entries) carry `diff_file: null` and set `truncated: true`. Group by path+status even when an entry has no diff.
 
 By default `collect` runs `git add -A` first — so a human invoking the skill on a dirty tree gets everything staged automatically. Pass `--no-add` when the caller has already curated the staging area (e.g. an upstream agent staged only the files relevant to the change in progress) and that selection must be preserved. With `--no-add` the index is read as-is; if nothing is staged the result is still `status: "clean"`.
 
@@ -174,6 +176,8 @@ Write this to the `plan_path` returned by `collect` (`<temp_dir>/commit-plan.jso
 
 **Grouping rules.** Every staged file in exactly one group. `D` goes with the semantic change that justifies it (usually the same group as its replacement). `R` uses only the new path. Prefer granular commits by concern (config, feature, tests, docs).
 
+**No empty groups.** Never emit a group with an empty `files` array. If a concern has no staged file, do not create the group at all. The number of groups can never exceed the number of staged files. **Every staged `D` path is staged and MUST be assigned to a group** — the change that removes or replaces it. Deletions are never optional and never left unassigned, even when `collect` reports them with `diff_file: null`. The validator rejects empty groups (`EMPTY_FILE_LIST`) and unassigned staged files (`STAGED_BUT_UNASSIGNED`); a plan that trips either is a bug to fix before re-validating, not a state to present.
+
 **Message format.** Shape: `<type>[!]: <description>`. **No scope** — the validator rejects `feat(scope):` by policy; convey the affected area in the description (`feat: add user profile caching`). `!` (breaking change marker) is allowed right after the type (`feat!: drop support for Node 14`). Single-line description, ≤ max length (default `72`).
 
 ## Approval UX
@@ -222,26 +226,44 @@ When `has_remote: true`, emit no warning here — the push prompt after commit w
 
 ### Approval prompt
 
-Prefer the IDE's structured question tool (`AskQuestion` in Cursor, `user_input` in Antigravity) with the six options below. Fallback — when no such tool exists — is a numbered list for single-digit answers:
+Prefer the IDE's structured question tool (`AskQuestion` in Cursor, `user_input` in Antigravity) with the options below. Fallback — when no such tool exists — is a numbered list for single-digit answers:
 
 ```markdown
 ### Approval
 
-1. Approve and execute
-2. Adjust messages or grouping
-3. Change author (name and email)
-4. Create new branch before commit
-5. Update `.gitignore` and unstage matching files
-6. Cancel
+1. Approve and execute (commit only)
+2. Approve, commit and push
+3. Adjust messages or grouping
+4. Change author (name and email)
+5. Create new branch before commit
+6. Update `.gitignore` and unstage matching files
+7. Cancel
 ```
 
-Only explicit approval (option 1 / "approve" / "yes") proceeds to `execute`. Options 2 and 6 keep their previous semantics. Options 3, 4 and 5 mutate state, then **always return to this same approval prompt** (see "Adjustment flows" below).
+**Option 2 is conditional.** Show `Approve, commit and push` only when `preflight.remote_info.has_remote: true`. When `has_remote: false`, omit option 2 entirely and renumber the rest 2–6 — the menu becomes the six-entry list (`Approve and execute`, `Adjust messages or grouping`, `Change author`, `Create new branch before commit`, `Update .gitignore`, `Cancel`); there is nothing to push to.
 
-## Adjustment flows (options 3–5)
+Semantics:
+
+- **Option 1 — Approve and execute (commit only):** run `execute --confirm`, report commits, then follow the normal **Push UX** (a separate push prompt, when `has_remote: true`).
+- **Option 2 — Approve, commit and push:** run `execute --confirm`; on success **skip the push prompt** and call `push` directly, sourcing `--remote` / `--branch` / `--set-upstream` from the `execute` success payload via the **Push UX → Selection rules** (no new logic). Then render the Push UX after-push block (success or failure). On `execute` failure do **not** push — surface the failure/rollback block as usual.
+- **Options 3 and 7** keep their previous semantics (Adjust re-plans then re-validates; Cancel aborts). **Options 4, 5 and 6** mutate state, then **always return to this same approval prompt** (see "Adjustment flows" below).
+
+Only an explicit approve choice (option 1, option 2, "approve", "yes") proceeds to `execute`.
+
+## Adjustment flows (options 3–6)
 
 Every chat message inside these flows still wears the `# 📦 git-commit` banner. Each option ends by re-displaying the plan banner and the approval menu — never by jumping to `execute`.
 
-### Option 3 — Change author
+### Option 3 — Adjust messages or grouping
+
+1. Apply the user's requested change to the plan (reword a message, split, merge, or re-assign files). Keep every staged file in exactly one group; never create an empty group.
+2. Overwrite the plan at the same `plan_path`. The existing `temp_dir` and staging are untouched.
+3. **Re-run `validate --temp-dir <temp_dir>`** and loop on its errors (max 3 attempts), exactly like step 4 of the Workflow. After 3 failed attempts, surface `## ⚠️ Could not validate the plan` and call `cleanup` — never present an unvalidated plan.
+4. On `status: ok`, re-display the plan banner and the approval menu.
+
+Presenting an adjusted plan without a passing `validate` is forbidden — that is how empty or unassigned groups reach the user.
+
+### Option 4 — Change author
 
 1. Ask the user for the new `name` and `email` (single prompt; accept `Name <email>` or two short lines).
 2. Run `set-author --name <N> --email <E>`. The payload returns the new `author`.
@@ -249,7 +271,7 @@ Every chat message inside these flows still wears the `# 📦 git-commit` banner
 
 The existing `temp_dir` and plan stay valid — staging is untouched.
 
-### Option 4 — Create new branch before commit
+### Option 5 — Create new branch before commit
 
 1. Ask the user for the branch name.
 2. Run `create-branch --name <N>`.
@@ -258,7 +280,7 @@ The existing `temp_dir` and plan stay valid — staging is untouched.
 
 Staging is untouched, so `temp_dir` and plan remain valid.
 
-### Option 5 — Update `.gitignore`
+### Option 6 — Update `.gitignore`
 
 The agent owns every step except the final `git rm --cached`. Pattern selection is judgment work — there is no built-in heuristic; the agent reasons over the staged file list and the project layout.
 
@@ -307,7 +329,7 @@ If `collect` returns `status: "clean"` after the changes (everything was unstage
 
 ## Push UX
 
-After `execute --confirm` succeeds, the success payload drives the next step:
+After `execute --confirm` succeeds, the success payload drives the next step. **If the user chose menu option 2 (Approve, commit and push), there is no push prompt** — push runs automatically via the Selection rules below, then the after-push block is rendered. The prompt described here applies only to menu option 1 (commit only):
 
 - `has_remote: false` → no push prompt. The flow ends at the commit-summary banner (which already carries the no-remote notice).
 - `has_remote: true` → emit a second message with the push prompt. `has_upstream` state is never surfaced as a warning; it only decides whether `push` is called with `--set-upstream`.
@@ -419,6 +441,7 @@ Commits stay local on `<branch>`. Push manually with `git push <remote> <branch>
 - Tables for file lists, SHAs, counts. Blockquotes for commit messages. Backticks for paths/SHAs/commands/flags. Numbered lists for user choices (single-digit answers).
 - The only permitted mid-flow narration is "Analyzing <N> files staged…" when `collect.total_staged ≥ threshold`. No other progress text.
 - Never show diffs to the user — `diffs_dir` is agent-internal reasoning only.
+- Never render a group with zero files in the displayed plan. The plan is only presented after `validate` returns `status: ok` — a passing validate guarantees no empty group exists, so an empty group on screen means the plan was presented without (re-)validating, which is forbidden.
 
 ## Rendered examples
 

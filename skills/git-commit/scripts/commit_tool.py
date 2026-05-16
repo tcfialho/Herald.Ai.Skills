@@ -444,11 +444,20 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
     summary_only = len(entries) > SUMMARY_ONLY_THRESHOLD
     truncated = False
+    diffs_emitted = 0
 
+    # `staged_files` always carries every staged entry (path + status) so the
+    # agent can never be blind to a deletion. `--max-files` only caps how many
+    # entries get a generated diff — the file list itself is never truncated.
     for entry in entries:
         if entry["status"] == "D" or summary_only:
             entry["diff_file"] = None
             entry["diff_lines"] = 0
+            continue
+        if diffs_emitted >= args.max_files:
+            entry["diff_file"] = None
+            entry["diff_lines"] = 0
+            truncated = True
             continue
         diff_text, line_count = _collect_diff(entry["path"], args.max_diff_lines_per_file)
         entry["diff_lines"] = line_count
@@ -458,21 +467,17 @@ def cmd_collect(args: argparse.Namespace) -> int:
         try:
             diff_path.write_text(diff_text, encoding="utf-8")
             entry["diff_file"] = _as_posix(diff_path)
+            diffs_emitted += 1
         except OSError as exc:
             emit_event("warn", "collect.diff_write_failed", path=entry["path"], error=str(exc))
             entry["diff_file"] = None
-
-    limited = entries
-    if len(entries) > args.max_files:
-        limited = entries[: args.max_files]
-        truncated = True
 
     emit_result({
         "status": "ok",
         "temp_dir": _as_posix(temp_dir),
         "plan_path": _as_posix(_plan_path(temp_dir)),
         "diffs_dir": _as_posix(diffs_dir),
-        "staged_files": limited,
+        "staged_files": entries,
         "total_staged": len(entries),
         "diff_summary": {
             "total_files": len(entries),
@@ -1034,7 +1039,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp_col.add_argument(
         "--max-files", type=int, default=MAX_FILES_DEFAULT,
-        help=f"Cap the number of files in the response (default: {MAX_FILES_DEFAULT}).",
+        help=(
+            "Cap the number of files for which a diff is generated "
+            f"(default: {MAX_FILES_DEFAULT}). The full staged-file list "
+            "(path + status) is always returned regardless of this value."
+        ),
     )
     sp_col.add_argument(
         "--max-diff-lines-per-file", type=int,

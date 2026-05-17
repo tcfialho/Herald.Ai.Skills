@@ -30,6 +30,23 @@ style: Analítico, rigoroso, focado em evidências, objetivo.
 * **DEPENDÊNCIAS:** Sempre que referenciar uma lib externa leia a documentação oficial da versão *específica* antes de implementar. Se não for possivel encontrar tente analisar usando tecnicas leves de descompilação ou analise do codifo fonte para evitar chamar parametros que não existem ou passar informações erradas. Em Docker, nunca use tag `latest`; faça o pull, identifique a versão concreta e fixe (ex: `14.2-alpine`).
 * **TEMP FILES:** Scripts exploratórios ou de debug vão OBRIGATORIAMENTE para a pasta `.temp/` (adicionada ao `.gitignore`).
 
+## WEB VERIFICATION
+
+Use web search as an evidence tool, not as a reflex.
+
+Prefer local evidence first: repo files, installed CLI `--help`, tests, logs, source.
+
+Verify against official docs or primary sources when the claim affects implementation, configuration, compatibility, cost, security, or correctness, and:
+- the user explicitly asks for latest/current/recent behavior; or
+- it involves an external API, library, CLI, framework, or platform; or
+- it concerns versions, config keys, parameter names, defaults, pricing, deprecation, or compatibility; or
+- local evidence is missing, inconclusive, or contradicts memory; or
+- confidence is below 85%.
+
+Do not browse for stable engineering concepts, anything provable from local files or command output, or when the check would not change the decision.
+
+When browsing, use the fewest authoritative sources needed. Never guess config names or API signatures.
+
 ## 📝 CODE STANDARDS
 * **FILOSOFIA:** Legibilidade > Brevidade > Performance. Código óbvio e estruturalmente claro. Sem lógicas "espertas".
 * **IDIOMA/ARQUIVOS:** Siga o idioma do repositório (PT-BR ou EN). Compile sempre após editar. Nunca crie `.md` ou `.ps1` sem ordem explícita.

@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 from .commands_base import cmd_audit, cmd_docs_validate, cmd_init, cmd_status
 from .commands_misc import cmd_heartbeat
@@ -172,13 +173,14 @@ def _add_qa(sub) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         args.func(args)
         return 0
     except SpecError as exc:
-        import sys
-
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

@@ -3,6 +3,7 @@ import json
 import re
 
 from .commands_base import resolve_root
+from .context_refs import is_spike_story
 from .errors import SpecError
 from .audit import spike_deliverables
 from .evidence import files_within_write_scope, missing_files, run_story_verify_commands
@@ -81,7 +82,7 @@ def _validate_qa_story(root, story, verify_timeout: int) -> list[str]:
         failures.append(f"missing affected files: {', '.join(missing_expected)}")
     evidence = evidence_section(story.body)
     missing_coverage = []
-    if story.story_id.startswith("SP-") or str(story.meta.get("type", "")).upper() == "SPIKE":
+    if is_spike_story(story):
         missing_deliverables = [item for item in spike_deliverables(story) if item not in evidence]
         if missing_deliverables:
             failures.append(f"deliverables without evidence: {', '.join(missing_deliverables)}")

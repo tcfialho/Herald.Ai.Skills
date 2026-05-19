@@ -39,13 +39,35 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
     meta: dict[str, Any] = {}
     current_key: str | None = None
+    current_subkey: str | None = None
     for line in lines[1:end_index]:
         if not line.strip():
+            continue
+        nested_match = re.match(r"^\s{2}([A-Za-z0-9_\-]+):\s*(.*)$", line)
+        if nested_match and current_key:
+            key, raw_value = nested_match.groups()
+            current = meta.setdefault(current_key, {})
+            if not isinstance(current, dict):
+                current = {}
+                meta[current_key] = current
+            if raw_value == "":
+                current[key] = []
+            else:
+                current[key] = parse_scalar(raw_value)
+            current_subkey = key
+            continue
+        if line.startswith("    - ") and current_key and current_subkey:
+            current = meta.setdefault(current_key, {})
+            if isinstance(current, dict):
+                nested = current.setdefault(current_subkey, [])
+                if isinstance(nested, list):
+                    nested.append(parse_scalar(line[6:]))
             continue
         if line.startswith("  - ") and current_key:
             current = meta.setdefault(current_key, [])
             if isinstance(current, list):
                 current.append(parse_scalar(line[4:]))
+            current_subkey = None
             continue
         match = re.match(r"^([A-Za-z0-9_\-]+):\s*(.*)$", line)
         if not match:
@@ -57,6 +79,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         else:
             meta[key] = parse_scalar(raw_value)
             current_key = key
+        current_subkey = None
     return meta, "\n".join(lines[end_index + 1 :]).lstrip("\n")
 
 
@@ -66,7 +89,15 @@ def render_frontmatter(meta: dict[str, Any], body: str) -> str:
     lines = ["---"]
     for key in keys:
         value = meta.get(key)
-        if isinstance(value, list):
+        if isinstance(value, dict):
+            lines.append(f"{key}:")
+            for nested_key, nested_value in value.items():
+                if isinstance(nested_value, list):
+                    lines.append(f"  {nested_key}:")
+                    lines.extend(f"    - {scalar_to_yaml(item)}" for item in nested_value)
+                else:
+                    lines.append(f"  {nested_key}: {scalar_to_yaml(nested_value)}")
+        elif isinstance(value, list):
             lines.append(f"{key}:")
             lines.extend(f"  - {scalar_to_yaml(item)}" for item in value)
         else:

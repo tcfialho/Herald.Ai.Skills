@@ -1,6 +1,7 @@
 import argparse
 
 from .commands_base import resolve_root
+from .context_refs import is_spike_story, resolved_story_context, validate_story_context_refs
 from .errors import SpecError
 from .evidence import missing_files
 from .audit import spike_deliverables
@@ -73,6 +74,10 @@ def cmd_story_context(args: argparse.Namespace) -> None:
     if story is None:
         raise SpecError("no story selected and no active story for this agent")
     print(read_text(story.path))
+    resolved_context = resolved_story_context(root, story)
+    if resolved_context:
+        print("\n---\n")
+        print(resolved_context)
 
 
 def cmd_story_submit_qa(args: argparse.Namespace) -> None:
@@ -91,11 +96,14 @@ def cmd_story_submit_qa(args: argparse.Namespace) -> None:
         raise SpecError(f"incomplete tasks: {', '.join(incomplete)}")
     if story_has_open_bugs(story):
         raise SpecError("story has open QA bugs")
+    context_errors = validate_story_context_refs(root, story)
+    if context_errors:
+        raise SpecError("context refs invalid: " + "; ".join(context_errors))
     missing_expected = missing_files(root, expected_file_artifacts(story.body))
     if missing_expected:
         raise SpecError(f"missing affected files: {', '.join(missing_expected)}")
     evidence = evidence_section(story.body)
-    is_spike = story.story_id.startswith("SP-") or str(story.meta.get("type", "")).upper() == "SPIKE"
+    is_spike = is_spike_story(story)
     if is_spike:
         missing_deliverables = [item for item in spike_deliverables(story) if item not in evidence]
         if missing_deliverables:

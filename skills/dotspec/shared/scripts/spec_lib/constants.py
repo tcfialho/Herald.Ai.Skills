@@ -35,6 +35,7 @@ AUDIT_SKIP_DIRS = {
 
 FRONTMATTER_ORDER = [
     "id",
+    "type",
     "status",
     "title",
     "complexity",
@@ -44,5 +45,6 @@ FRONTMATTER_ORDER = [
     "heartbeat_at",
     "lease_until",
     "current_task",
+    "context_refs",
     "write_scope",
 ]

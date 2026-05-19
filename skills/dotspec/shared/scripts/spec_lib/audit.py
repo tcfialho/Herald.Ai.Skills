@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from .constants import AUDIT_SKIP_DIRS, DEFAULT_BANNED_FOLDERS
+from .context_refs import is_spike_story, validate_story_context_refs
 from .evidence import files_within_write_scope, missing_files
 from .markdown import (
     acceptance_criteria_ids,
@@ -28,7 +29,9 @@ def validate_docs(root: Path) -> list[str]:
         errors.append("missing .spec/spec.md")
     else:
         spec_text = read_text(spec)
-        for heading in ("Objective", "Use Cases", "Use Case Details", "Business Rules"):
+        if "## Overview" not in spec_text and "## Objective" not in spec_text:
+            errors.append("spec.md missing section: Overview")
+        for heading in ("Use Cases", "Use Case Details", "Business Rules"):
             if f"## {heading}" not in spec_text:
                 errors.append(f"spec.md missing section: {heading}")
 
@@ -53,6 +56,7 @@ def validate_docs(root: Path) -> list[str]:
 
 def audit_story(root: Path, story: Story) -> list[str]:
     errors: list[str] = []
+    errors.extend(validate_story_context_refs(root, story))
     parsed = parse_story_filename(story.path)
     if parsed["status"] != story.status:
         errors.append(f"{story.path.name}: filename status differs from front matter")
@@ -61,7 +65,7 @@ def audit_story(root: Path, story: Story) -> list[str]:
 
     ac_ids = acceptance_criteria_ids(story.body)
     tasks = parse_tasks(story.body)
-    is_spike = story.story_id.startswith("SP-") or str(story.meta.get("type", "")).upper() == "SPIKE"
+    is_spike = is_spike_story(story)
     if is_spike:
         if not extract_section(story.body, "Research Question"):
             errors.append(f"{story.story_id}: missing research question")

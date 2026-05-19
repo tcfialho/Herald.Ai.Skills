@@ -1,17 +1,27 @@
 ---
 name: sm
-description: DotSpec /sm scrum-master stage. Use when DotSpec product, design, architecture, or spike artifacts in .spec/ must be converted into ordered, self-contained Markdown stories under .spec/backlog/. Produces US-* feature stories and SP-* spike stories with copied context, AC/DEL coverage, tasks, verify commands, affected files (paths created or modified), architecture gates, and Definition of Done. Enforces SP-* before US-* ordering in the execution queue.
+description: DotSpec /sm scrum-master stage. Use when DotSpec product, design, architecture, or spike artifacts in .spec/ must be converted into ordered Markdown stories under .spec/backlog/. Produces US-* feature stories with context_refs, SP-* spike stories, AC/DEL coverage, tasks, verify commands, affected files (paths created or modified), architecture gates, and Definition of Done. Enforces SP-* before US-* ordering in the execution queue.
 ---
 
 # DotSpec /sm — Scrum Master
 
 ## Purpose
 
-Generate ordered, self-contained stories in `.spec/backlog/`.
+Generate ordered stories in `.spec/backlog/`.
 
-The story is the operational package for DEV and QA. It intentionally duplicates selected content from `spec.md`, `design.md`, and `architecture.md` so downstream agents do not need to cross-read documents.
+The story is the operational package for DEV and QA. It contains the story's own delivery intent, scope, files, tasks, verify commands, and evidence surface. It does **not** duplicate selected content from `spec.md`, `design.md`, and `architecture.md`. Instead, it declares `context_refs` in front matter and `spec story context` resolves the minimum needed context for DEV.
 
 `/sm` does **not** author spikes. PO writes `SP-*` entries in `.spec/spec.md ## Spikes`. `/sm` reads that section and generates the matching `SP-*` backlog stories.
+
+## Command — `spec`
+
+`spec` is **not** an executable on `PATH`. Every `spec ...` instruction in this document is shorthand for the bundled DotSpec script run with Python. Resolve it once, before the phase check, then reuse it for every `spec` call below:
+
+1. Take this skill's own directory — the folder that contains this `SKILL.md`.
+2. Its sibling script is `<skill-dir>/../shared/scripts/spec.py`. Resolve that to an absolute path. `shared/` always sits next to the role directory in both the repo layout (`skills/dotspec/<role>/`) and the installed bundle (`<skills-root>/<role>/`), so this holds in both.
+3. From here on, read every `spec <args>` as `python "<abs>/shared/scripts/spec.py" <args>` (use `python3` if `python` is unavailable).
+
+Run it from the target project root — the directory that has, or will have, `.spec/` — so the script resolves the right project; it finds its own templates regardless of where it is called from. Resolve every other `../shared/...` path in this document the same way: relative to this skill directory, never relative to the current working directory.
 
 ## Required Inputs
 
@@ -44,24 +54,32 @@ Use `../shared/templates/story_template.md` for feature stories and `../shared/t
 - Create `US-*` for product behavior that DEV can implement and QA can validate against acceptance criteria.
 - Create `SP-*` for every `SP-*` entry that already exists in `.spec/spec.md ## Spikes`. Do not invent new spikes here — return to `/po` if a new one is needed.
 - Do not turn a vague feature into a Spike only because details are missing. Ask `/po` to clarify business behavior first.
-- Copy design context only when the story touches UI as defined by `design.md`. For no-UI stories, write "No UI impact" in the story.
+- Set `context_refs.design: full` when the story touches UI/frontend as defined by `design.md`; otherwise set `context_refs.design: none`. `design.md` is proprietary DESIGN.md format and is referenced as a whole, not by granular IDs.
 - Complexity uses a small Fibonacci scale: 1 trivial, 2 small, 3 moderate, 5 complex, 8 ceiling. Anything above 8 triggers the **Story Split Decision (Objective)** tree below — do not eyeball, run the tree.
 - Affected Files must be concrete paths that QA can check. Includes files the story **creates or modifies** — list every path touched, whether new or pre-existing. Prefer specific files; use directories only when the directory itself is the deliverable.
 - `write_scope` must be the smallest set of paths the DEV needs. If a task needs a path outside scope, update the story before DEV edits it.
 - A technical AC belongs in the story only when it is local to that story. Shared quality expectations belong in `architecture.md`.
 
+## Output Language
+
+- Author story titles, intent, scope, task descriptions, Definition of Done prose, spike research questions, and other user-facing story text in the language of the user's current product prompt.
+- Keep front matter keys, statuses, IDs, architecture/product refs, commands, paths, class names, package names, and code symbols in their canonical English/as-specified form.
+- If the prompt mixes languages, use the dominant language of the product request; ask only when the intended story language is genuinely ambiguous.
+
 ## Story Rules
 
-Each story must include:
+Each feature story must include:
 
 - Stable sequential ID.
 - Status in filename and front matter.
 - Complexity score.
 - Priority/order.
-- Copied product context.
-- Copied design context when the story has UI impact.
-- Copied architecture context.
-- Acceptance criteria.
+- `context_refs.product` listing every `UC-*`, flow (`UC-XXX.FP`, `UC-XXX.FA*`), `AC-*`, `BR-*`, `INV-*`, `BE-*`, or `SP-*`/`DEL-*` needed by the story.
+- `context_refs.architecture` listing every `ADR-*`, `CMP-*`, `CLS-*`, `VO-*`, `IF-*`, `CMD-*`, `NFR-*`, `QG-*`, or `STATE-*` needed by the story.
+- `context_refs.design` set to `full` or `none`.
+- Story-authored intent, layer, and scope.
+- Acceptance criteria by ID only (`AC-*`); the text resolves from `spec.md`.
+- Implementation Targets mapping each affected file to its architecture refs and expected symbols.
 - Affected Files (paths created or modified by the story).
 - Tasks.
 - Verify command per task.
@@ -159,9 +177,22 @@ Hard rules (non-negotiable):
 
 ## Acceptance Criteria
 
-ACs may originate in `spec.md`, but every AC needed by a story must be copied into the story.
+ACs originate in `spec.md`. Every AC needed by a story must be referenced in `context_refs.product` and listed by ID in the story `## Acceptance Criteria`; do not copy the AC text into the story.
 
 If a new AC changes product behavior, return to `/po` to update `spec.md`. If it is purely technical/incremental, keep it in the story.
+
+## Story Context Contract
+
+Feature stories must declare `context_refs` in front matter. `/sm` is responsible for selecting the smallest product and architecture refs that allow DEV and QA to execute the story without reading full DotSpec source documents.
+
+Use these source-of-truth boundaries:
+
+- `spec.md` owns product refs: `ACT-*`, `UC-*`, `UC-*.FP`, `UC-*.FA*`, `AC-*`, `BR-*`, `INV-*`, `BE-*`, `SP-*`, `DEL-*`, `ASM-*`.
+- `architecture.md` owns architecture refs: `ADR-*`, `CMP-*`, `CLS-*`, `VO-*`, `IF-*`, `CMD-*`, `NFR-*`, `QG-*`, `STATE-*`.
+- `design.md` is referenced as `design: full` for UI/frontend stories and `design: none` for non-UI stories.
+- Affected Files are authored in the story by `/sm`; they do not come from `spec.md`. Files that are explicitly cited in `architecture.md` must map back to architecture refs through `## Implementation Targets`. Files not cited by architecture may omit architecture refs.
+
+Every architecture-referenced file in `## Affected Files` must appear in `## Implementation Targets`. Every such target must name the architecture ref(s) that justify the file and the expected symbol(s) from `architecture.md`. Every task that creates or modifies a file explicitly cited in `architecture.md` must declare matching `architecture_refs`.
 
 ## Completion Gate
 
@@ -170,9 +201,9 @@ Before finishing:
 1. Run `python ../shared/scripts/spec.py docs validate` from the project root. If the path is different, resolve `spec.py` first and run the equivalent command.
 2. Every feature story has ACs, tasks, verify commands, affected files, and write scope.
 3. Every spike story has research question, deliverables, tasks, verify commands, affected files (spike outputs **plus** every affected Use Case path), a propagation task, and write scope covering the affected UC paths.
-4. No story requires the DEV to read another DotSpec document to implement it.
+4. `spec story context STORY-ID` resolves every story ref, and no story requires DEV to read full `.spec/spec.md`, `.spec/architecture.md`, or `.spec/design.md` directly.
 5. SP-* stories appear before US-* stories in the execution queue (verified by `spec story next` returning SP-* first).
 6. Run `spec phase done sm`.
-7. Immediately invoke the `dev` skill via the Skill tool. Do not ask the user — the backlog artifact is deterministic and needs no human approval before development starts.
+7. Ask the user for explicit permission before invoking the `dev` skill. Do not auto-invoke `/dev` after `/sm`; stop after reporting the backlog status and the recommended next step unless the user clearly grants permission to continue.
 
-If the user explicitly says "stop", "pause", "halt", or otherwise interrupts, do not auto-invoke.
+If the user explicitly says "stop", "pause", "halt", declines permission, or otherwise interrupts, do not invoke `/dev`.

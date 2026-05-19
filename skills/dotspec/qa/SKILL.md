@@ -11,13 +11,15 @@ Audit, in one batch, every story DEV has parked in `QA` status, then either appr
 
 QA runs once at the end of `/dev`. It does not interrupt DEV story-by-story.
 
-## Required Tool
+## Command — `spec`
 
-Use the shared script:
+`spec` is **not** an executable on `PATH`. Every `spec ...` instruction in this document is shorthand for the bundled DotSpec script run with Python. Resolve it once, before the phase check, then reuse it for every `spec` call below:
 
-```text
-python ../shared/scripts/spec.py ...
-```
+1. Take this skill's own directory — the folder that contains this `SKILL.md`.
+2. Its sibling script is `<skill-dir>/../shared/scripts/spec.py`. Resolve that to an absolute path. `shared/` always sits next to the role directory in both the repo layout (`skills/dotspec/<role>/`) and the installed bundle (`<skills-root>/<role>/`), so this holds in both.
+3. From here on, read every `spec <args>` as `python "<abs>/shared/scripts/spec.py" <args>` (use `python3` if `python` is unavailable).
+
+Run it from the target project root — the directory that has, or will have, `.spec/` — so the script resolves the right project; it finds its own templates regardless of where it is called from. Resolve every other `../shared/...` path in this document the same way: relative to this skill directory, never relative to the current working directory.
 
 ## Mandatory Flow
 
@@ -90,7 +92,7 @@ Do not loop these by hand to replace `qa run`.
 - Broader regression checks come from each story's verify commands, package/architecture-defined commands, and the cross-cutting smoke pass. `qa run` executes the per-story verify commands; the smoke pass exercises the running app against `spec.md` use cases.
 - Do not invent destructive or production-dependent regression checks. Prefer local deterministic commands and ephemeral test data.
 - A failure is any open QA bug, missing or unmet AC/DEL, missing affected file, failing verify command, failing smoke check, untested declared file, architecture violation, UI mismatch, or unrecorded assumption.
-- QA may read `design.md` and `architecture.md` to audit consistency, but approval is based on each story's package, recorded evidence, and the smoke report.
+- QA should prefer `spec story context STORY-ID` for story-specific product, architecture, and design context. Reading full DotSpec documents is reserved for cross-cutting smoke selection, run-command discovery, or investigating a documented inconsistency.
 - Smoke tooling: pick the lightest tool that proves the use case. Prefer `curl` over a browser, browser-via-CDP over installing a new browser stack, embedded browser only when CDP is impossible. Never use `--headless` on Edge and never kill the user's Edge process (per global Browser Automation rules).
 - **Smoke scope is intentionally narrow.** Browser/CDP runs are token-expensive; restrict to the single most critical happy path (Smoke Budget Rules in step 5). Edge cases, error states, and non-critical flows belong to per-story verify commands, not the smoke pass. If a regression slips through, add a verify command to the relevant story rather than expanding the browser smoke.
 
@@ -105,6 +107,7 @@ Every story is validated against:
 - Verify commands pass.
 - Affected files still exist at approval time (covers files the story created **or** modified).
 - Task files remain inside the declared `write_scope` as the concrete architecture boundary gate.
+- `Implementation Targets` map architecture-referenced affected files to valid architecture refs and expected symbols.
 - UI stories match `design.md` and prototype intent.
 - Architecture gates respected.
 - No open QA bugs remain.

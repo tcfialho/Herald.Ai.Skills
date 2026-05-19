@@ -13,22 +13,22 @@ The DEV agent does not choose the next story. It asks the script.
 
 DEV can execute feature stories (`US-*`) and spike stories (`SP-*`). For spikes, the goal is to produce the declared deliverables and research report, not production behavior. Full spike execution rules — folder layout under `.spec/spikes/SP-XXX/`, scratch vs. deliverable, Use-Case propagation enforcement — live in `references/spike_execution.md`. Read it before claiming any `SP-*`.
 
-## Required Tool
+## Command — `spec`
 
-Use the shared script:
+`spec` is **not** an executable on `PATH`. Every `spec ...` instruction in this document is shorthand for the bundled DotSpec script run with Python. Resolve it once, before the phase check, then reuse it for every `spec` call below:
 
-```text
-python ../shared/scripts/spec.py ...
-```
+1. Take this skill's own directory — the folder that contains this `SKILL.md`.
+2. Its sibling script is `<skill-dir>/../shared/scripts/spec.py`. Resolve that to an absolute path. `shared/` always sits next to the role directory in both the repo layout (`skills/dotspec/<role>/`) and the installed bundle (`<skills-root>/<role>/`), so this holds in both.
+3. From here on, read every `spec <args>` as `python "<abs>/shared/scripts/spec.py" <args>` (use `python3` if `python` is unavailable).
 
-Resolve the path relative to this skill directory, or use an absolute path.
+Run it from the target project root — the directory that has, or will have, `.spec/` — so the script resolves the right project; it finds its own templates regardless of where it is called from. Resolve every other `../shared/...` path in this document the same way: relative to this skill directory, never relative to the current working directory.
 
 ## Mandatory Loop
 
 1. Run `spec phase check dev`. If it fails, stop and ask the user to call the missing previous skill.
 2. Run `spec story next --agent <id>`.
 3. Copy the full `DOTSPEC STATUS` block into chat.
-4. Read the story context returned by `spec story context`.
+4. Read the story context returned by `spec story context`. This command returns the story plus the resolved DotSpec context declared by `context_refs`.
 5. For each task:
    - `spec task start TASK-ID --agent <id>`
    - Copy the status block into chat.
@@ -74,10 +74,13 @@ In every other case, keep the loop running silently.
 
 - For `US-*`, implement production behavior and cover `AC-*`.
 - For `SP-*`, implement only isolated experiments, scripts, and research reports declared by the story; cover `DEL-*`. Follow `references/spike_execution.md` for artifact placement, throwaway rules, and the mandatory Use-Case propagation task.
+- For `US-*`, do not read full `.spec/spec.md`, `.spec/architecture.md`, or `.spec/design.md` directly for implementation context. Use only the story and the resolved context returned by `spec story context`.
+- If `spec story context` reports missing, stale, duplicate, or contradictory refs, stop the story and route it back to `/sm` for context repair. Do not widen context manually by reading the full DotSpec documents.
 - Use `spec task complete ... --covers AC-001` for feature coverage and `--covers DEL-001` for spike deliverables when overriding the story task coverage.
 - If work inside one task will take more than 20 minutes without completing a task, run `spec heartbeat --agent <id>` before continuing. The default lease is 45 minutes.
 - If a required edit is outside `write_scope`, stop and update the story through the appropriate DotSpec stage before editing. For SP-* propagation paths missing from `write_scope`, route back to `/sm` to add them — do not widen scope silently.
 - If a verify command is missing, wrong, or too weak to prove the task, fix the story before marking the task complete.
+- If a required production symbol is not listed in `## Implementation Targets` or the task's `architecture_refs`, return to `/sm`; do not invent a new class, command, interface, or folder name.
 
 ## Non-Negotiable Rules
 
@@ -88,6 +91,7 @@ In every other case, keep the loop running silently.
 - Do not take another story while one is ACTIVE for this agent.
 - Do not take a later story while an earlier story is not DONE.
 - Do not edit outside `write_scope` unless the story is updated first.
+- Do not implement production symbols whose names differ from the architecture refs resolved for the story.
 - Do not bypass architecture gates.
 - Do not create separate stories for QA bugs unless the user changes scope.
 - If `spec` blocks progress, fix the reason instead of moving on.

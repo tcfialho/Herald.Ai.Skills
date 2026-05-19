@@ -20,6 +20,16 @@ This phase is prototype-first. Do not finalize `.spec/design.md` until the user 
 
 Use `../shared/templates/design_template.md` as the base only after the prototype is accepted.
 
+## Command — `spec`
+
+`spec` is **not** an executable on `PATH`. Every `spec ...` instruction in this document is shorthand for the bundled DotSpec script run with Python. Resolve it once, before the phase check, then reuse it for every `spec` call below:
+
+1. Take this skill's own directory — the folder that contains this `SKILL.md`.
+2. Its sibling script is `<skill-dir>/../shared/scripts/spec.py`. Resolve that to an absolute path. `shared/` always sits next to the role directory in both the repo layout (`skills/dotspec/<role>/`) and the installed bundle (`<skills-root>/<role>/`), so this holds in both.
+3. From here on, read every `spec <args>` as `python "<abs>/shared/scripts/spec.py" <args>` (use `python3` if `python` is unavailable).
+
+Run it from the target project root — the directory that has, or will have, `.spec/` — so the script resolves the right project; it finds its own templates regardless of where it is called from. Resolve every other `../shared/...` path in this document the same way: relative to this skill directory, never relative to the current working directory.
+
 ## Input
 
 Before working, run `spec phase check ux`. If it fails, stop and ask the user to call the missing previous skill.
@@ -27,6 +37,12 @@ Before working, run `spec phase check ux`. If it fails, stop and ask the user to
 Read `.spec/spec.md` after the phase check passes.
 
 If `.spec/architecture.md` exists, use it for frontend technology constraints. If not, choose the simplest static prototype format and record the assumption.
+
+## Output Language
+
+- Author prototype visible copy and `.spec/design.md` user-facing prose in the language of the user's current product prompt.
+- Keep programming terms, design token names, component keys, technical identifiers, IDs, paths, commands, class names, package names, and code symbols in their canonical English/as-specified form.
+- If the prompt mixes languages, use the dominant language of the product request; ask only when the intended artifact language is genuinely ambiguous.
 
 ## Spike Escalation
 

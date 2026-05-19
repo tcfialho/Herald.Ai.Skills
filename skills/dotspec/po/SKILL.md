@@ -21,6 +21,16 @@ This phase does not decide implementation architecture, detailed NFR strategy, o
 
 Use `../shared/templates/spec_template.md` as the base structure when creating a new spec.
 
+## Command — `spec`
+
+`spec` is **not** an executable on `PATH`. Every `spec ...` instruction in this document is shorthand for the bundled DotSpec script run with Python. Resolve it once, before the phase check, then reuse it for every `spec` call below:
+
+1. Take this skill's own directory — the folder that contains this `SKILL.md`.
+2. Its sibling script is `<skill-dir>/../shared/scripts/spec.py`. Resolve that to an absolute path. `shared/` always sits next to the role directory in both the repo layout (`skills/dotspec/<role>/`) and the installed bundle (`<skills-root>/<role>/`), so this holds in both.
+3. From here on, read every `spec <args>` as `python "<abs>/shared/scripts/spec.py" <args>` (use `python3` if `python` is unavailable).
+
+Run it from the target project root — the directory that has, or will have, `.spec/` — so the script resolves the right project; it finds its own templates regardless of where it is called from. Resolve every other `../shared/...` path in this document the same way: relative to this skill directory, never relative to the current working directory.
+
 ## Phase Rules
 
 - Before working, run `spec phase check po`. If `.spec/` does not exist, run `spec init` first, then run the phase check.
@@ -30,6 +40,12 @@ Use `../shared/templates/spec_template.md` as the base structure when creating a
 - Use Markdown as the source of truth.
 - Keep acceptance criteria functional. Technical gates belong in backlog stories or `architecture.md`.
 - EARS is optional and must not be introduced unless the user explicitly asks or the project is regulated/formal enough to justify it.
+
+## Output Language
+
+- Author all user-facing prose in `.spec/spec.md` in the language of the user's current product prompt.
+- Keep programming terms, technical identifiers, IDs, paths, commands, class names, package names, and code symbols in their canonical English/as-specified form.
+- If the prompt mixes languages, use the dominant language of the product request; ask only when the intended artifact language is genuinely ambiguous.
 
 ## Decision Rules
 
@@ -75,7 +91,7 @@ Never ask obvious questions. If the answer is inferable, assume it and record th
 - **Use Case Details** — exactly one drill-down per UC in the matrix (1:1, no skipping). Each drill-down has Actor, Preconditions, `Main Flow (UC-XXX.FP)` numbered, `Alternative Flows (UC-XXX.FA1, FA2, ...)` numbered, Postconditions.
 - **Business Rules** — `BR-XXX` items.
 - **Invariants** — `INV-XXX` items. Invariants are conditions the system always respects regardless of trigger.
-- **Business Entities** — table with columns `Entity | Type (Domain \| Actor \| External \| Value Object) | Definition`.
+- **Business Entities** — table with columns `ID | Entity | Type (Domain \| Actor \| External \| Value Object) | Definition`. Entity IDs use `BE-XXX` and are referenced by `/arch` and `/sm`.
 - **Functional Acceptance Criteria** — `AC-XXX` items. Anchor each AC to a UC when possible. EARS notation is optional; use only when the user explicitly wants it or the domain is regulated/audit-heavy.
 - **Spikes** — only when unresolved technical discovery is requested, or when the entire spec is a spike-only intake. Each `SP-*` declares `Research Question`, `Allowed Experiments`, `Deliverables (DEL-*)`, and `Decision Options`. Full structure in `references/spike_authoring.md`.
 - **Assumptions** — record every assumption, including auto-assumed answers from Discovery Questions.
@@ -97,7 +113,7 @@ Before finishing:
 3. Confirm there is exactly one drill-down per UC (1:1 with the matrix, no omissions).
 4. Confirm the Mermaid `graph LR` diagram is present and includes every actor and UC referenced in the matrix.
 5. Confirm every functional acceptance criterion has an ID and, when possible, a UC reference.
-6. Confirm every Business Entity has a `Type` (`Domain | Actor | External | Value Object`) and a one-line definition.
+6. Confirm every Business Entity has a stable `BE-XXX` ID, a `Type` (`Domain | Actor | External | Value Object`), and a one-line definition.
 7. If `## Spikes` exists, confirm every `SP-*` matches the structure in `references/spike_authoring.md` (Research Question, Allowed Experiments, Deliverables, Decision Options).
 8. Confirm no implementation-only detail (stack, NFR target, folder layout, visual decision) was placed in the spec when it belongs in `architecture.md` or `design.md`.
 9. Run `spec phase done po`.

@@ -10,27 +10,51 @@ claimed_at: null
 heartbeat_at: null
 lease_until: null
 current_task: null
+context_refs:
+  product:
+    - UC-000
+    - UC-000.FP
+    - AC-000
+    - BR-000
+    - INV-000
+    - BE-000
+  architecture:
+    - ADR-000
+    - CMP-APP-000
+    - CLS-APP-000
+    - QG-000
+  design: none
 write_scope:
   - TBD
 ---
 
 # US-000 - TBD
 
-## Product Context
+## Layer
 
-Copied from `.spec/spec.md`. Include only the context needed to implement this story.
+TBD
 
-## Design Context
+## Story Intent
 
-Copied from `.spec/design.md` and `.spec/prototype/` when UI exists.
+TBD
 
-## Architecture Context
+## Scope
 
-Copied from `.spec/architecture.md`. Include only applicable Herald rules and technical decisions.
+In:
+- TBD
+
+Out:
+- TBD
 
 ## Acceptance Criteria
 
-- [ ] AC-001: GIVEN TBD WHEN TBD THEN TBD.
+- [ ] AC-000
+
+## Implementation Targets
+
+| File | Architecture Ref | Expected Symbol |
+| --- | --- | --- |
+| `TBD` | CLS-APP-000 | `TBD` |
 
 ## Affected Files
 
@@ -42,11 +66,13 @@ Concrete paths the story creates **or** modifies. QA validates each path exists 
 
 - [ ] TASK-001: TBD
   - type: TBD
+  - architecture_refs:
+    - CLS-APP-000
   - files:
     - `TBD`
   - verify_cmd: `TBD`
   - covers:
-    - AC-001
+    - AC-000
 
 ## Definition Of Done
 

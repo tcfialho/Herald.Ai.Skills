@@ -39,39 +39,46 @@ Default principles:
 ```mermaid
 flowchart TD
     subgraph UI["UI Layer"]
-        Screen1[Screen / Page]
-        Controller1[Controller]
+        CMP-UI-001[Screen / Page]
+        CMP-UI-002[Controller]
     end
 
     subgraph App["Application Layer"]
-        Handler1[Handler / Use Case]
-        Service1[Domain Service]
+        CMP-APP-001[Handler / Use Case]
+        CMP-APP-002[Domain Service]
     end
 
     subgraph Domain["Domain Layer"]
-        Entity1[Entity]
-        VO1[Value Object]
+        CMP-DOM-001[Entity]
+        CMP-DOM-002[Value Object]
     end
 
     subgraph Infra["Infrastructure Layer"]
-        Repo1[Repository]
-        Adapter1[External Adapter]
+        CMP-INF-001[Repository]
+        CMP-INF-002[External Adapter]
     end
 
     subgraph External["External Systems"]
-        Ext1[(Database)]
-        Ext2[/External API/]
+        EXT-001[(Database)]
+        EXT-002[/External API/]
     end
 
-    Screen1 --> Controller1
-    Controller1 --> Handler1
-    Handler1 --> Service1
-    Handler1 --> Repo1
-    Service1 --> Entity1
-    Entity1 --> VO1
-    Repo1 --> Ext1
-    Adapter1 --> Ext2
+    CMP-UI-001 --> CMP-UI-002
+    CMP-UI-002 --> CMP-APP-001
+    CMP-APP-001 --> CMP-APP-002
+    CMP-APP-001 --> CMP-INF-001
+    CMP-APP-002 --> CMP-DOM-001
+    CMP-DOM-001 --> CMP-DOM-002
+    CMP-INF-001 --> EXT-001
+    CMP-INF-002 --> EXT-002
 ```
+
+| ID | Name | Layer | Responsibility | Folder |
+| --- | --- | --- | --- | --- |
+| CMP-UI-001 | TBD | UI | TBD | `TBD` |
+| CMP-APP-001 | TBD | Application | TBD | `TBD` |
+| CMP-DOM-001 | TBD | Domain | TBD | `TBD` |
+| CMP-INF-001 | TBD | Infrastructure | TBD | `TBD` |
 
 ### Layer Definitions
 
@@ -99,6 +106,11 @@ classDiagram
     EntityName --> ValueObjectName
 ```
 
+| ID | Symbol | Maps To | Layer | Responsibility | Folder |
+| --- | --- | --- | --- | --- | --- |
+| CLS-DOM-001 | EntityName | BE-001 | Domain | TBD | `TBD` |
+| VO-DOM-001 | ValueObjectName | BE-002 | Domain | TBD | `TBD` |
+
 ### 2.2 Visão Application
 
 ```mermaid
@@ -111,6 +123,12 @@ classDiagram
     }
     UseCaseHandler --> DomainService
 ```
+
+| ID | Symbol | Layer | Responsibility | Folder |
+| --- | --- | --- | --- | --- |
+| CLS-APP-001 | UseCaseHandler | Application | TBD | `TBD` |
+| CMD-APP-001 | UseCaseCommand | Application | TBD | `TBD` |
+| IF-APP-001 | RepositoryPort | Application | TBD | `TBD` |
 
 ### 2.3 Visão Infrastructure
 
@@ -129,13 +147,18 @@ classDiagram
     RepositoryImpl ..|> IRepository
 ```
 
+| ID | Symbol | Layer | Responsibility | Folder |
+| --- | --- | --- | --- | --- |
+| CLS-INF-001 | RepositoryImpl | Infrastructure | TBD | `TBD` |
+| CLS-INF-002 | ExternalApiAdapter | Infrastructure | TBD | `TBD` |
+
 ## 3. Matriz de Rastreabilidade (UC → Components)
 
 > Map every functional Use Case from `spec.md` to the components/classes/namespaces from sections 1 and 2. No UC may be left unmapped.
 
 | Use Case | Layer(s) | Component(s) / Class(es) | Namespace / Folder |
 | --- | --- | --- | --- |
-| UC-001 | UI, Application, Domain | `Controller1`, `UseCaseHandler`, `EntityName` | `app/uc-001/`, `domain/` |
+| UC-001 | UI, Application, Domain | CMP-UI-002, CMP-APP-001, CLS-APP-001, CMP-DOM-001, CLS-DOM-001 | `app/uc-001/`, `domain/` |
 
 ## 4. Diagrama de Transições de Estado
 
@@ -204,14 +227,15 @@ run: TBD
 
 ## Quality Gates
 
-- Domain entities do not access infrastructure.
-- Handlers orchestrate and return Result-like outcomes where applicable.
-- Commands and queries are immutable DTOs for the language.
-- Files are inside allowed folders.
-- Banned folders are not introduced.
-- Verify commands pass.
-- Class diagrams in section 2 are split by layer (no monolithic Mermaid block).
-- Every UC in `spec.md` has a row in the Traceability Matrix.
+- QG-001: Domain entities do not access infrastructure.
+- QG-002: Handlers orchestrate and return Result-like outcomes where applicable.
+- QG-003: Commands and queries are immutable DTOs for the language.
+- QG-004: Files are inside allowed folders.
+- QG-005: Banned folders are not introduced.
+- QG-006: Verify commands pass.
+- QG-007: Class diagrams in section 2 are split by layer (no monolithic Mermaid block).
+- QG-008: Every UC in `spec.md` has a row in the Traceability Matrix.
+- QG-009: Production files listed in backlog stories map to Architecture Refs through `Implementation Targets`.
 
 ## ADRs
 

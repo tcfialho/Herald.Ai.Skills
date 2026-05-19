@@ -80,9 +80,9 @@ graph LR
 
 ## Business Entities
 
-| Entity | Type | Definition |
-| --- | --- | --- |
-| TBD | Domain \| Actor \| External \| Value Object | TBD |
+| ID | Entity | Type | Definition |
+| --- | --- | --- | --- |
+| BE-001 | TBD | Domain \| Actor \| External \| Value Object | TBD |
 
 ## Functional Acceptance Criteria
 
@@ -100,7 +100,7 @@ graph LR
 
 ## Assumptions
 
-- TBD
+- ASM-001: TBD
 
 ## Open Questions
 

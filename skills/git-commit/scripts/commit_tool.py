@@ -4,10 +4,14 @@
 Subcommands:
   preflight          Check repo validity, ongoing ops, empty repo, clean tree,
                      and report author identity + remote info.
+  prepare            Preflight + collect (no diffs by default) + auto plan +
+                     validate in one invocation (preferred agent entry).
   collect            Stage everything, create a per-invocation OS temp dir, and
                      return its path alongside staged files + truncated diffs.
   validate           Validate <temp-dir>/commit-plan.json against staged files.
   execute            Commit groups atomically with synchronized timestamps.
+                     Use --yes-plan after prepare/collect to commit from
+                     staging-manifest.json without re-reading the index.
   push               Push a branch to a remote (never uses --no-verify).
   cleanup            Remove a temp dir returned by `collect`. Idempotent.
   set-author         Set local repo user.name / user.email.
@@ -68,6 +72,7 @@ from typing import Any, Optional, Sequence
 
 TEMP_DIR_PREFIX = "git-commit-"
 PLAN_FILENAME = "commit-plan.json"
+MANIFEST_FILENAME = "staging-manifest.json"
 DIFFS_SUBDIR = "diffs"
 
 ALLOWED_TYPES_DEFAULT: tuple[str, ...] = (
@@ -122,6 +127,10 @@ def emit_event(level: str, event: str, **fields: Any) -> None:
 
 def _plan_path(temp_dir: Path) -> Path:
     return temp_dir / PLAN_FILENAME
+
+
+def _manifest_path(temp_dir: Path) -> Path:
+    return temp_dir / MANIFEST_FILENAME
 
 
 def _diffs_dir(temp_dir: Path) -> Path:
@@ -287,17 +296,14 @@ def build_commit_regex(
 # preflight
 # ---------------------------------------------------------------------------
 
-def cmd_preflight(_args: argparse.Namespace) -> int:
-    emit_event("info", "preflight.start")
-
+def _preflight_result() -> tuple[int, dict[str, Any]]:
     rev = run_git(["rev-parse", "--git-dir"], check=False)
     if rev.returncode != 0:
-        emit_result({
+        return EXIT_NOT_A_REPO, {
             "status": "error",
             "code": "NOT_A_REPO",
             "message": "Current directory is not a git repository.",
-        })
-        return EXIT_NOT_A_REPO
+        }
 
     git_dir = Path(rev.stdout.strip())
     markers = {
@@ -308,13 +314,12 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
     }
     for op_name, marker_path in markers.items():
         if marker_path.exists():
-            emit_result({
+            return EXIT_OP_IN_PROGRESS, {
                 "status": "error",
                 "code": "OP_IN_PROGRESS",
                 "operation": op_name,
                 "message": f"{op_name} in progress; finish or abort it first.",
-            })
-            return EXIT_OP_IN_PROGRESS
+            }
 
     head_result = run_git(["rev-parse", "HEAD"], check=False)
     is_empty = head_result.returncode != 0
@@ -332,7 +337,7 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
 
     status = run_git(["status", "--porcelain"])
     if not status.stdout.strip():
-        emit_result({
+        return EXIT_WORKING_TREE_CLEAN, {
             "status": "clean",
             "code": "WORKING_TREE_CLEAN",
             "message": "Working tree clean. Nothing to commit.",
@@ -341,20 +346,32 @@ def cmd_preflight(_args: argparse.Namespace) -> int:
             "is_empty": is_empty,
             "author": author,
             "remote_info": remote_info,
-        })
-        emit_event("info", "preflight.clean")
-        return EXIT_WORKING_TREE_CLEAN
+        }
 
-    emit_result({
+    return EXIT_OK, {
         "status": "ok",
         "branch": branch,
         "head": head_sha,
         "is_empty": is_empty,
         "author": author,
         "remote_info": remote_info,
-    })
-    emit_event("info", "preflight.done", branch=branch, head=head_sha, is_empty=is_empty)
-    return EXIT_OK
+    }
+
+
+def cmd_preflight(_args: argparse.Namespace) -> int:
+    emit_event("info", "preflight.start")
+    code, payload = _preflight_result()
+    emit_result(payload)
+    if code == EXIT_WORKING_TREE_CLEAN:
+        emit_event("info", "preflight.clean")
+    elif code == EXIT_OK:
+        emit_event(
+            "info", "preflight.done",
+            branch=payload.get("branch"),
+            head=payload.get("head"),
+            is_empty=payload.get("is_empty"),
+        )
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +410,117 @@ def _parse_name_status(raw: str) -> list[dict[str, str]]:
     return entries
 
 
+def _commit_paths_for_entry(entry: dict[str, str]) -> list[str]:
+    """Paths to pass to `git commit --` so this index entry is fully recorded."""
+    if entry.get("status") == "R" and entry.get("old_path"):
+        return [entry["old_path"], entry["path"]]
+    return [entry["path"]]
+
+
+def _staged_entries_from_git() -> list[dict[str, str]]:
+    result = run_git(
+        ["diff", "--cached", "--name-status", "--find-renames=50"],
+    )
+    return _parse_name_status(result.stdout)
+
+
+def _all_staged_paths(entries: list[dict[str, str]]) -> set[str]:
+    paths: set[str] = set()
+    for entry in entries:
+        paths.update(_commit_paths_for_entry(entry))
+    return paths
+
+
+def _canonical_staged_paths(entries: list[dict[str, str]]) -> set[str]:
+    """One representative path per staged change (new path for renames)."""
+    return {entry["path"] for entry in entries}
+
+
+def _write_staging_manifest(temp_dir: Path, entries: list[dict[str, str]]) -> None:
+    manifest_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        item: dict[str, Any] = {
+            "status": entry["status"],
+            "path": entry["path"],
+            "commit_paths": entry.get("commit_paths") or _commit_paths_for_entry(entry),
+        }
+        if entry.get("old_path"):
+            item["old_path"] = entry["old_path"]
+        manifest_entries.append(item)
+    payload = {"version": 1, "entries": manifest_entries}
+    _manifest_path(temp_dir).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_staging_manifest(
+    temp_dir: Path,
+) -> tuple[Optional[list[dict[str, str]]], Optional[dict[str, Any]]]:
+    path = _manifest_path(temp_dir)
+    if not path.exists():
+        return None, {
+            "code": "MANIFEST_MISSING",
+            "path": _as_posix(path),
+            "hint": (
+                "Run `prepare` or `collect` first so staging-manifest.json is "
+                "written, or omit --yes-plan to read the index at commit time."
+            ),
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, {
+            "code": "MANIFEST_INVALID_JSON",
+            "path": _as_posix(path),
+            "error": str(exc),
+        }
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return None, {
+            "code": "MANIFEST_SCHEMA",
+            "hint": "staging-manifest.json must be an object with an `entries` array.",
+        }
+    entries: list[dict[str, str]] = []
+    for raw in data["entries"]:
+        if not isinstance(raw, dict) or "path" not in raw or "status" not in raw:
+            return None, {
+                "code": "MANIFEST_ENTRY_INVALID",
+                "hint": "Each manifest entry needs `status` and `path`.",
+            }
+        entry: dict[str, str] = {
+            "status": str(raw["status"]),
+            "path": str(raw["path"]),
+        }
+        if raw.get("old_path"):
+            entry["old_path"] = str(raw["old_path"])
+        if isinstance(raw.get("commit_paths"), list):
+            entry["commit_paths"] = [str(p) for p in raw["commit_paths"]]
+        entries.append(entry)
+    return entries, None
+
+
+def _expand_commit_paths(
+    files: Sequence[str],
+    entries: list[dict[str, str]],
+) -> list[str]:
+    """Expand plan paths so renames include old_path and nothing stays staged."""
+    by_any: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        for p in _commit_paths_for_entry(entry):
+            by_any[p] = entry
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for plan_path in files:
+        entry = by_any.get(plan_path)
+        candidates = _commit_paths_for_entry(entry) if entry else [plan_path]
+        for p in candidates:
+            if p not in seen:
+                seen.add(p)
+                ordered.append(p)
+    return ordered
+
+
 def _collect_diff(path: str, unified_lines: int) -> tuple[str, int]:
     """Return (diff_text, line_count) truncated to `unified_lines` context."""
     result = run_git(
@@ -403,9 +531,7 @@ def _collect_diff(path: str, unified_lines: int) -> tuple[str, int]:
     return diff_text, len(diff_text.splitlines())
 
 
-def cmd_collect(args: argparse.Namespace) -> int:
-    emit_event("info", "collect.start", no_add=args.no_add)
-
+def _collect_core(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.no_add:
         emit_event("info", "collect.skip_add", reason="--no-add: respecting current staging")
     else:
@@ -418,12 +544,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
     entries = _parse_name_status(name_status.stdout)
 
     if not entries:
-        emit_result({
+        return EXIT_WORKING_TREE_CLEAN, {
             "status": "clean",
             "code": "WORKING_TREE_CLEAN",
             "message": "Nothing is staged after `git add -A`.",
-        })
-        return EXIT_WORKING_TREE_CLEAN
+        }
 
     temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX))
     diffs_dir = _diffs_dir(temp_dir)
@@ -445,21 +570,22 @@ def cmd_collect(args: argparse.Namespace) -> int:
     summary_only = len(entries) > SUMMARY_ONLY_THRESHOLD
     truncated = False
     diffs_emitted = 0
+    max_files = getattr(args, "max_files", MAX_FILES_DEFAULT)
 
-    # `staged_files` always carries every staged entry (path + status) so the
-    # agent can never be blind to a deletion. `--max-files` only caps how many
-    # entries get a generated diff — the file list itself is never truncated.
     for entry in entries:
-        if entry["status"] == "D" or summary_only:
+        entry["commit_paths"] = _commit_paths_for_entry(entry)
+        if max_files <= 0 or entry["status"] == "D" or summary_only:
             entry["diff_file"] = None
             entry["diff_lines"] = 0
             continue
-        if diffs_emitted >= args.max_files:
+        if diffs_emitted >= max_files:
             entry["diff_file"] = None
             entry["diff_lines"] = 0
             truncated = True
             continue
-        diff_text, line_count = _collect_diff(entry["path"], args.max_diff_lines_per_file)
+        diff_text, line_count = _collect_diff(
+            entry["path"], args.max_diff_lines_per_file,
+        )
         entry["diff_lines"] = line_count
         if line_count > args.max_diff_lines_per_file * 4:
             truncated = True
@@ -469,13 +595,19 @@ def cmd_collect(args: argparse.Namespace) -> int:
             entry["diff_file"] = _as_posix(diff_path)
             diffs_emitted += 1
         except OSError as exc:
-            emit_event("warn", "collect.diff_write_failed", path=entry["path"], error=str(exc))
+            emit_event(
+                "warn", "collect.diff_write_failed",
+                path=entry["path"], error=str(exc),
+            )
             entry["diff_file"] = None
 
-    emit_result({
+    _write_staging_manifest(temp_dir, entries)
+
+    return EXIT_OK, {
         "status": "ok",
         "temp_dir": _as_posix(temp_dir),
         "plan_path": _as_posix(_plan_path(temp_dir)),
+        "manifest_path": _as_posix(_manifest_path(temp_dir)),
         "diffs_dir": _as_posix(diffs_dir),
         "staged_files": entries,
         "total_staged": len(entries),
@@ -485,13 +617,123 @@ def cmd_collect(args: argparse.Namespace) -> int:
             "total_removed": removed_total,
         },
         "summary_only": summary_only,
-        "truncated": truncated,
-    })
-    emit_event(
-        "info", "collect.done",
-        files=len(entries), added=added_total, removed=removed_total,
+        "truncated": truncated or max_files <= 0,
+    }
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    emit_event("info", "collect.start", no_add=args.no_add)
+    code, payload = _collect_core(args)
+    emit_result(payload)
+    if code == EXIT_OK:
+        summary = payload.get("diff_summary", {})
+        emit_event(
+            "info", "collect.done",
+            files=payload.get("total_staged"),
+            added=summary.get("total_added"),
+            removed=summary.get("total_removed"),
+        )
+    return code
+
+
+# ---------------------------------------------------------------------------
+# Auto plan (prepare)
+# ---------------------------------------------------------------------------
+
+def _normalize_path(path: str) -> str:
+    return path.replace("\\", "/")
+
+
+def _bucket_key(path: str) -> str:
+    parts = _normalize_path(path).split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[:2])
+    return parts[0]
+
+
+def _fit_message(message: str, max_length: int) -> str:
+    if len(message) <= max_length:
+        return message
+    return message[:max_length].rstrip()
+
+
+def _infer_commit_type(paths: list[str], bucket: str) -> str:
+    norm = [_normalize_path(p) for p in paths]
+    lower_bucket = bucket.lower()
+    if all(p.endswith(".md") for p in norm):
+        return "docs"
+    if "test" in lower_bucket or any("/test" in p or p.startswith("test/") for p in norm):
+        return "test"
+    if all(p.endswith((".yml", ".yaml", ".json", ".toml", ".lock")) for p in norm):
+        return "chore"
+    if all(p.endswith((".js", ".ts", ".css")) for p in norm):
+        return "style"
+    return "refactor"
+
+
+def _build_group_message(commit_type: str, bucket: str, max_length: int) -> str:
+    slug = _normalize_path(bucket)
+    if slug.startswith("skills/"):
+        slug = slug[len("skills/"):]
+    slug = slug.replace("/", " ").strip() or "staged files"
+    prefix = f"{commit_type}: "
+    budget = max_length - len(prefix)
+    if budget < 1:
+        return _fit_message(f"{commit_type}: update", max_length)
+    if len(slug) > budget:
+        slug = slug[:budget].rstrip()
+    return _fit_message(f"{prefix}{slug}", max_length)
+
+
+def _draft_plan_from_entries(
+    entries: list[dict[str, str]],
+    max_length: int = MAX_MESSAGE_LENGTH_DEFAULT,
+) -> dict[str, Any]:
+    deletions = sorted(e["path"] for e in entries if e.get("status") == "D")
+    others = [e for e in entries if e.get("status") != "D"]
+
+    buckets: dict[str, list[str]] = {}
+    for entry in others:
+        key = _bucket_key(entry["path"])
+        buckets.setdefault(key, []).append(entry["path"])
+
+    groups: list[dict[str, Any]] = []
+    gid = 1
+
+    if deletions:
+        groups.append({
+            "id": gid,
+            "message": _fit_message("chore: remove deleted paths", max_length),
+            "files": deletions,
+        })
+        gid += 1
+
+    for key in sorted(buckets.keys()):
+        paths = sorted(buckets[key])
+        commit_type = _infer_commit_type(paths, key)
+        groups.append({
+            "id": gid,
+            "message": _build_group_message(commit_type, key, max_length),
+            "files": paths,
+        })
+        gid += 1
+
+    if not groups:
+        canonical = sorted(_canonical_staged_paths(entries))
+        groups.append({
+            "id": 1,
+            "message": _fit_message("chore: update staged files", max_length),
+            "files": canonical,
+        })
+
+    return {"version": 1, "groups": groups}
+
+
+def _write_plan(plan_path: Path, plan: dict[str, Any]) -> None:
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
-    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -523,27 +765,14 @@ def _load_plan(plan_path: Path) -> tuple[Optional[dict], Optional[dict]]:
     return data, None
 
 
-def _current_staged_paths() -> set[str]:
-    result = run_git(
-        ["diff", "--cached", "--name-only", "--find-renames=50"],
-    )
-    return {line for line in result.stdout.splitlines() if line}
-
-
-def cmd_validate(args: argparse.Namespace) -> int:
-    temp_dir = Path(args.temp_dir)
-    plan_path = _plan_path(temp_dir)
-    emit_event("info", "validate.start", plan=_as_posix(plan_path))
-
-    plan, err = _load_plan(plan_path)
-    if err is not None:
-        emit_result({"status": "invalid", "errors": [err]})
-        return EXIT_PLAN_INVALID
-
-    assert plan is not None
-    allowed_types = tuple(t.strip() for t in args.allowed_types.split(",") if t.strip())
-    regex = build_commit_regex(allowed_types, args.max_length)
-
+def _validate_plan_core(
+    plan: dict[str, Any],
+    *,
+    allowed_types: Sequence[str],
+    max_length: int,
+    skip_staging_check: bool,
+) -> tuple[bool, list[dict[str, Any]], int]:
+    regex = build_commit_regex(allowed_types, max_length)
     errors: list[dict[str, Any]] = []
     plan_paths: list[str] = []
     path_to_groups: dict[str, list[int]] = {}
@@ -560,7 +789,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 "message": message,
                 "hint": (
                     "Expected `<type>[!]: <description>` in a single line "
-                    f"up to {args.max_length} chars. Scope (parentheses) is "
+                    f"up to {max_length} chars. Scope (parentheses) is "
                     "not allowed. Allowed types: "
                     f"{', '.join(allowed_types)}."
                 ),
@@ -586,39 +815,79 @@ def cmd_validate(args: argparse.Namespace) -> int:
             plan_paths.append(path)
             path_to_groups.setdefault(path, []).append(gid)
 
-    duplicates = {p: gs for p, gs in path_to_groups.items() if len(gs) > 1}
-    for path, groups in duplicates.items():
-        errors.append({
-            "code": "DUPLICATE_FILE_ACROSS_GROUPS",
-            "path": path,
-            "groups": groups,
-            "hint": "Each file must appear in exactly one group.",
-        })
+    for path, groups in path_to_groups.items():
+        if len(groups) > 1:
+            errors.append({
+                "code": "DUPLICATE_FILE_ACROSS_GROUPS",
+                "path": path,
+                "groups": groups,
+                "hint": "Each file must appear in exactly one group.",
+            })
 
-    if not args.skip_staging_check:
-        staged = _current_staged_paths()
+    if not skip_staging_check:
+        staged_entries = _staged_entries_from_git()
+        staged_all = _all_staged_paths(staged_entries)
+        canonical_staged = _canonical_staged_paths(staged_entries)
         plan_set = set(plan_paths)
 
         for path in plan_set:
-            if path not in staged:
+            if path not in staged_all:
                 errors.append({
                     "code": "FILE_NOT_STAGED",
                     "path": path,
                     "hint": (
                         "File is listed in the plan but not currently staged. "
-                        "Run `collect` again to refresh the staging area."
+                        "Run `prepare` or `collect` again to refresh staging."
                     ),
                 })
 
-        missing_from_plan = staged - plan_set
+        missing_from_plan = sorted(canonical_staged - plan_set)
         if missing_from_plan:
+            hints: list[str] = []
+            for path in missing_from_plan:
+                entry = next((e for e in staged_entries if e["path"] == path), None)
+                if entry and entry.get("status") == "D":
+                    hints.append(f"{path} (deleted — must be in a group)")
+                elif entry and entry.get("status") == "R":
+                    hints.append(
+                        f"{path} (rename from `{entry['old_path']}` — list the new path; "
+                        "old path is included automatically on commit)"
+                    )
+                else:
+                    hints.append(path)
             errors.append({
                 "code": "STAGED_BUT_UNASSIGNED",
-                "paths": sorted(missing_from_plan),
-                "hint": "Every staged file must belong to exactly one group.",
+                "paths": missing_from_plan,
+                "details": hints,
+                "hint": (
+                    "Every staged change must appear in exactly one group "
+                    "(use the new path for renames; deletions use the deleted path)."
+                ),
             })
 
-    if errors:
+    return (not errors, errors, len(plan_paths))
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    temp_dir = Path(args.temp_dir)
+    plan_path = _plan_path(temp_dir)
+    emit_event("info", "validate.start", plan=_as_posix(plan_path))
+
+    plan, err = _load_plan(plan_path)
+    if err is not None:
+        emit_result({"status": "invalid", "errors": [err]})
+        return EXIT_PLAN_INVALID
+
+    assert plan is not None
+    allowed_types = tuple(t.strip() for t in args.allowed_types.split(",") if t.strip())
+    ok, errors, file_count = _validate_plan_core(
+        plan,
+        allowed_types=allowed_types,
+        max_length=args.max_length,
+        skip_staging_check=args.skip_staging_check,
+    )
+
+    if not ok:
         emit_result({"status": "invalid", "errors": errors})
         emit_event("warn", "validate.failed", error_count=len(errors))
         return EXIT_PLAN_INVALID
@@ -626,9 +895,78 @@ def cmd_validate(args: argparse.Namespace) -> int:
     emit_result({
         "status": "ok",
         "groups": len(plan["groups"]),
-        "files": len(plan_paths),
+        "files": file_count,
     })
-    emit_event("info", "validate.done", groups=len(plan["groups"]), files=len(plan_paths))
+    emit_event("info", "validate.done", groups=len(plan["groups"]), files=file_count)
+    return EXIT_OK
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    emit_event("info", "prepare.start", no_add=args.no_add)
+
+    pre_code, preflight = _preflight_result()
+    if pre_code != EXIT_OK:
+        emit_result(preflight)
+        return pre_code
+
+    collect_args = argparse.Namespace(
+        no_add=args.no_add,
+        max_files=args.max_files,
+        max_diff_lines_per_file=args.max_diff_lines_per_file,
+    )
+    emit_event("info", "collect.start", no_add=args.no_add)
+    col_code, collect_payload = _collect_core(collect_args)
+    if col_code != EXIT_OK:
+        emit_result({**collect_payload, "preflight": preflight})
+        return col_code
+
+    entries = collect_payload["staged_files"]
+    allowed_types = tuple(t.strip() for t in args.allowed_types.split(",") if t.strip())
+    plan = _draft_plan_from_entries(entries, max_length=args.max_length)
+    plan_path = Path(collect_payload["plan_path"])
+    _write_plan(plan_path, plan)
+
+    ok, errors, file_count = _validate_plan_core(
+        plan,
+        allowed_types=allowed_types,
+        max_length=args.max_length,
+        skip_staging_check=False,
+    )
+    if not ok:
+        emit_result({
+            "status": "invalid",
+            "code": "AUTO_PLAN_INVALID",
+            "errors": errors,
+            "preflight": preflight,
+            "temp_dir": collect_payload["temp_dir"],
+            "plan_path": collect_payload["plan_path"],
+            "hint": "Auto-generated plan failed validation; report as a tool bug.",
+        })
+        emit_event("warn", "prepare.auto_plan_failed", error_count=len(errors))
+        return EXIT_PLAN_INVALID
+
+    emit_result({
+        "status": "ok",
+        "auto_plan": True,
+        "temp_dir": collect_payload["temp_dir"],
+        "plan_path": collect_payload["plan_path"],
+        "plan": plan,
+        "preflight": preflight,
+        "validate": {
+            "status": "ok",
+            "groups": len(plan["groups"]),
+            "files": file_count,
+        },
+        "staged_files": entries,
+        "total_staged": collect_payload["total_staged"],
+        "diff_summary": collect_payload["diff_summary"],
+        "truncated": collect_payload["truncated"],
+        "manifest_path": collect_payload.get("manifest_path"),
+    })
+    emit_event(
+        "info", "prepare.done",
+        groups=len(plan["groups"]), files=file_count,
+    )
     return EXIT_OK
 
 
@@ -656,16 +994,37 @@ def _perform_rollback(state: dict) -> tuple[bool, Optional[str]]:
         return False, (exc.stderr or "").strip() or str(exc)
 
 
+def _resolve_staged_entries_for_execute(
+    temp_dir: Path,
+    yes_plan: bool,
+) -> tuple[Optional[list[dict[str, str]]], Optional[dict[str, Any]]]:
+    if yes_plan:
+        return _load_staging_manifest(temp_dir)
+    return _staged_entries_from_git(), None
+
+
 def cmd_execute(args: argparse.Namespace) -> int:
     temp_dir = Path(args.temp_dir)
     plan_path = _plan_path(temp_dir)
-    emit_event("info", "execute.start", plan=_as_posix(plan_path), dry_run=not args.confirm)
+    emit_event(
+        "info", "execute.start",
+        plan=_as_posix(plan_path),
+        dry_run=not args.confirm,
+        yes_plan=args.yes_plan,
+    )
 
     plan, err = _load_plan(plan_path)
     if err is not None:
         emit_result({"status": "error", "code": err["code"], "detail": err})
         return EXIT_PLAN_INVALID
     assert plan is not None
+
+    staged_entries, manifest_err = _resolve_staged_entries_for_execute(
+        temp_dir, args.yes_plan,
+    )
+    if manifest_err is not None:
+        emit_result({"status": "error", "code": manifest_err["code"], "detail": manifest_err})
+        return EXIT_PLAN_INVALID
 
     head_result = run_git(["rev-parse", "HEAD"], check=False)
     head_was_empty = head_result.returncode != 0
@@ -683,7 +1042,6 @@ def cmd_execute(args: argparse.Namespace) -> int:
         }
 
     if not args.confirm:
-        # Dry run: preserve temp dir so caller can retry with --confirm.
         emit_result({
             "status": "dry_run",
             "message": "Dry run; pass --confirm to actually commit.",
@@ -691,11 +1049,15 @@ def cmd_execute(args: argparse.Namespace) -> int:
             "head_was_empty": head_was_empty,
             "synchronized_timestamp": batch_ts_iso,
             "temp_dir": _as_posix(temp_dir),
+            "yes_plan": args.yes_plan,
             "groups": [
                 {
                     "id": g.get("id", i + 1),
                     "message": g.get("message"),
                     "files": g.get("files", []),
+                    "commit_paths": _expand_commit_paths(
+                        g.get("files", []), staged_entries,
+                    ),
                 }
                 for i, g in enumerate(plan["groups"])
             ],
@@ -703,7 +1065,6 @@ def cmd_execute(args: argparse.Namespace) -> int:
         emit_event("info", "execute.dry_run")
         return EXIT_OK
 
-    # In-memory state: survives only until cleanup at the end of this call.
     rollback_state: dict[str, Any] = {
         "head_was_empty": head_was_empty,
         "commits_done": [],
@@ -715,7 +1076,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
     for idx, group in enumerate(plan["groups"], start=1):
         gid = group.get("id", idx)
         message = group["message"]
-        files = group["files"]
+        files = _expand_commit_paths(group.get("files", []), staged_entries)
         emit_event("info", "execute.commit.start", group=gid, index=idx, total=total)
 
         try:
@@ -781,6 +1142,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
         "author": _get_author(),
         "remote_info": _get_remote_info(branch_after, is_empty=False),
         "temp_cleaned": cleaned,
+        "yes_plan": args.yes_plan,
     })
     return EXIT_OK
 
@@ -1030,6 +1392,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp_pre.set_defaults(func=cmd_preflight)
 
+    sp_prep = sub.add_parser(
+        "prepare",
+        help=(
+            "Preflight + collect (no diffs by default) + auto commit plan + "
+            "validate in one shot. Preferred agent entry."
+        ),
+    )
+    sp_prep.add_argument(
+        "--no-add", action="store_true",
+        help="Skip implicit `git add -A` (same as collect).",
+    )
+    sp_prep.add_argument(
+        "--max-files", type=int, default=0,
+        help=(
+            "Cap diff generation (default: 0 = no diffs). Pass a positive "
+            "value only when the agent needs diff files for message tuning."
+        ),
+    )
+    sp_prep.add_argument(
+        "--max-diff-lines-per-file", type=int,
+        default=MAX_DIFF_LINES_PER_FILE_DEFAULT,
+        help=f"Unified-diff context lines per file (default: {MAX_DIFF_LINES_PER_FILE_DEFAULT}).",
+    )
+    sp_prep.add_argument(
+        "--allowed-types", type=str, default=",".join(ALLOWED_TYPES_DEFAULT),
+        help="Comma-separated allowed commit types.",
+    )
+    sp_prep.add_argument(
+        "--max-length", type=int, default=MAX_MESSAGE_LENGTH_DEFAULT,
+        help=f"Max total commit message length (default: {MAX_MESSAGE_LENGTH_DEFAULT}).",
+    )
+    sp_prep.set_defaults(func=cmd_prepare)
+
     sp_col = sub.add_parser(
         "collect",
         help=(
@@ -1100,6 +1495,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_exe.add_argument(
         "--natural-timestamps", action="store_true",
         help="Let git assign a fresh timestamp per commit (default: synchronized).",
+    )
+    sp_exe.add_argument(
+        "--yes-plan", action="store_true",
+        help=(
+            "Commit using staging-manifest.json from prepare/collect instead of "
+            "re-reading the index. Required on the default path after prepare."
+        ),
     )
     sp_exe.set_defaults(func=cmd_execute)
 

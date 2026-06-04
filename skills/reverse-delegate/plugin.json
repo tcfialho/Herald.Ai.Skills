@@ -1,0 +1,5 @@
+{
+  "name": "reverse-delegate",
+  "description": "Inverted delegation: agy drives as PO/SM/junior-dev (research, spikes, POCs, coding, tests) and calls Claude Opus via 'claude -p' only for the two high-leverage acts — planning and reviewing. File-path handoffs only. Keeps cheap work on the cheap meter; the expensive model pays only where it pays off.",
+  "disabled": false
+}

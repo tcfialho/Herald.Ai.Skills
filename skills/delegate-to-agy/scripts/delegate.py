@@ -198,6 +198,16 @@ def main():
     out_fd, out_path = tempfile.mkstemp(prefix="agy_delegate_", suffix=".txt")
     err_fd, err_path = tempfile.mkstemp(prefix="agy_delegate_err_", suffix=".txt")
 
+    # ANTI-LOOP signal (CRITICAL): we are an AI (Claude) calling agy as a
+    # down-worker. Export an unambiguous env var so agy's AGENTS.md knows NOT to
+    # run any "escalate up to claude -p" protocol (e.g. reverse-delegate), which
+    # would cause infinite recursion Claude->agy->claude->... agy can read this
+    # via `printenv`. This does not depend on prompt content (defense in depth
+    # alongside the output-contract carve-out).
+    child_env = dict(os.environ)
+    child_env["AGY_CALLED_BY_AI"] = "1"
+    child_env["AGENT_CALLER"] = "claude-delegate-to-agy"
+
     try:
         with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
             # stdin=DEVNULL is CRITICAL: agy -p hangs on tool-using tasks otherwise.
@@ -209,6 +219,7 @@ def main():
                 stderr=err_f,
                 timeout=timeout,
                 shell=(sys.platform == "win32"),
+                env=child_env,
             )
         rc = proc.returncode
 

@@ -104,7 +104,7 @@ Falhou: `--continue "você errou X, refaça"` (barato), refaça com prompt melho
 
 **Validadas (2026-06-02):** transporte `-p`, disco/grep, web, edição em massa, `--mode docs` (QUOTE localizado na fonte). Contrato de saída + parser de tags funcionando; sem tags → raw output (nunca vazio).
 
-**⚠️ `--continue` em modo `-p`:** integrado mas comportamento não confirmado — pode não reconectar contexto. Se uma segunda chamada com `--continue` retornar resposta idêntica à primeira, assuma que o contexto não foi retido.
+**✅ `--continue` em modo `-p`:** reconecta o contexto corretamente (testado 2026-06-04). Nota: o agy reimprime toda a conversa anterior antes da resposta nova — o parser do wrapper pega a **última** ocorrência de cada tag, que é sempre a resposta atual.
 
 **Modos de falha:**
 - **Vazio / travamento** → stdin não desvinculado (wrapper resolve). Se reincidir: `agy -p "ping"`.

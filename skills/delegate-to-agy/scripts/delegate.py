@@ -143,11 +143,15 @@ def find_agy():
 # ── tag parser ──────────────────────────────────────────────────────────────────
 
 def parse_tags(raw_text):
+    # Use the LAST match of each tag, not the first. With --continue, agy reprints
+    # the entire prior conversation (each earlier turn carries its own <RESULT>… tags)
+    # and the NEW answer comes last. Grabbing the first match would return a stale
+    # turn; the final occurrence is always the current response.
     found = {}
     for tag in TAGS:
-        m = re.search(rf"<{tag}>(.*?)</{tag}>", raw_text, re.DOTALL | re.IGNORECASE)
-        if m:
-            found[tag] = m.group(1).strip()
+        matches = re.findall(rf"<{tag}>(.*?)</{tag}>", raw_text, re.DOTALL | re.IGNORECASE)
+        if matches:
+            found[tag] = matches[-1].strip()
     return found
 
 

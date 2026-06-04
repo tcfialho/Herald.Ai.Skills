@@ -106,7 +106,34 @@ Falhou: `--continue "você errou X, refaça"` (barato), refaça com prompt melho
 
 **✅ `--continue` em modo `-p`:** reconecta o contexto corretamente (testado 2026-06-04). Nota: o agy reimprime toda a conversa anterior antes da resposta nova — o parser do wrapper pega a **última** ocorrência de cada tag, que é sempre a resposta atual.
 
-**Modos de falha:**
-- **Vazio / travamento** → stdin não desvinculado (wrapper resolve). Se reincidir: `agy -p "ping"`.
-- **Exit 124** → muito grande ou travado. Restrinja a tarefa ou aumente `--timeout`.
-- **Auth/crédito no stderr** → usuário precisa re-autenticar no Antigravity. Apresente o erro, use fallback.
+**NÃO ABANDONE A DELEGAÇÃO NO PRIMEIRO CONTRATEMPO.** Um único timeout/erro NÃO é prova de
+que o agy travou — é sinal de tarefa grande ou `--timeout` curto. Puxar a tarefa de volta pro
+Claude (WebSearch, ler tudo, codar você mesmo) desperdiça o token caro que a skill existe pra
+poupar. A barra pra "fazer você mesmo" é **travamento PROVADO**, não o primeiro percalço.
+
+**Rodando em background — NÃO redirecione o stdout.** O harness de background já captura o stdout
+no arquivo `.output` dele. Se você ADICIONAR um `> arquivo.log` no comando, o redirect rouba o
+stdout e o `.output` fica vazio — você vai achar que "deu vazio" quando a resposta foi pro seu
+arquivo. Regra: rode `delegate.sh ... -- "..."` SEM redirect e leia o `.output` que o harness
+informa. (Erro real cometido 2026-06-04: dupliquei redirect + captura e conclui "vazio" por engano.)
+
+**Diagnóstico "vivo vs travado" — `cli.log` mtime, não só `ping`.** `ping` abre uma sessão NOVA: prova
+que o agy-serviço está de pé, mas NÃO diz se *aquela chamada* que está demorando ainda progride. O
+sinal certo para a chamada em andamento é o log de sessão do agy:
+`~/.gemini/antigravity-cli/log/cli-*.log` (o mais recente). Se o `mtime` dele cresce / `tail` mostra
+linhas novas (`streamGenerateContent` etc.), a chamada está VIVA e trabalhando — espere/aumente o
+timeout. Se o `mtime` congela por minutos, aí sim é travamento. (Não hardcode esse path no wrapper —
+é layout interno do agy, pode mudar entre versões; use só para diagnóstico ad-hoc.)
+
+**Modos de falha — reação correta (escale, não desista):**
+- **Exit 124 (timeout)** → tarefa grande, NÃO travamento. Reação: **aumente `--timeout`** (ex.: 600→1200)
+  e/ou **rode em background** (sem redirect). Pesquisa web do agy lê muitas páginas e leva minutos —
+  é esperado. Antes de desistir, cheque o `cli.log` mtime (acima) para confirmar se está vivo.
+- **Vazio / travamento** → quase sempre stdin não desvinculado (o wrapper já resolve) OU redirect
+  duplicado em background (acima). Se reincidir genuinamente, prove com `agy -p "ping"` </dev/null;
+  se o ping responde, o agy está vivo — reformule a tarefa.
+- **Auth/crédito no stderr** → o usuário precisa re-autenticar no Antigravity (o agy pede o código
+  OAuth no stdin). Apresente o erro/URL ao usuário e peça o código; NÃO caia pro fallback por isso.
+  Para injetar o código: `printf 'CODIGO\n' | agy -p "..."`.
+- **Fallback pro Claude só quando:** o PING falha persistentemente, OU o mesmo pedido deu 124 com o
+  `cli.log` congelado após já ter aumentado o timeout. Aí sim informe o usuário que o agy falhou.

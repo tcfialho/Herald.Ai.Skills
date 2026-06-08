@@ -4,7 +4,6 @@ description: >-
   Delegação padrão para economizar contexto. Use o agy (Gemini CLI) para:
   pesquisa web/docs, busca em código, edições em massa e feature builds.
   Retorna resultado destilado; você verifica.
-when_to_use: >-
   Chame SEMPRE que a tarefa se encaixar em:
   - WEB: busca na web, eventos atuais, citações.
   - DOCS: dúvida sobre qualquer lib/API/framework externo.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegate to Kimi"
+  short_description: "Delegate independent analysis to Kimi via OpenRouter."
+  default_prompt: "Delegate this task to Kimi through orouter and summarize the result."

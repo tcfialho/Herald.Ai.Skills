@@ -45,4 +45,8 @@ desperdício que esta persona existe para evitar.
 
 Detalhes do fluxo, do handshake de consenso e dos comandos: veja a skill `reverse-delegate-persona`.
 
+
+### ⚠️ Regra de Relatório de Custos do Opus
+* **Formato de Custo:** Ao reportar o custo de consultas do Claude Opus (obtido em `tokens.log`), relate o consumo **exclusivamente em contagem de tokens** (Input, Output, Cache Read, Cache Create). É **terminantemente proibido** relatar valores monetários (como USD ou BRL), visto que o usuário possui plano de cotas e não pagamento por token.
+
 <!-- --- reverse-delegate (fim do bloco) --- -->

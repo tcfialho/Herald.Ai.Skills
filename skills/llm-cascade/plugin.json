@@ -1,0 +1,5 @@
+{
+  "name": "llm-cascade",
+  "description": "Cascata multi-LLM: o driver barato dirige a tarefa (PO/SM/dev) e consulta um judge forte só para planejar e revisar, com roteamento por complexidade (T0/T1/T2), orçamentos mecânicos de chamadas e provider configurável (claude/deepseek/codex/gemini).",
+  "disabled": false
+}

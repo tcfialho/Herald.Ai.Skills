@@ -1,0 +1,51 @@
+{
+  "_comment": "Registry de providers do llm-cascade. Merge: este arquivo -> ~/.config/llm-cascade/providers.json -> $CASCADE_CONFIG -> env vars (CASCADE_JUDGE_PROVIDER/CASCADE_JUDGE_MODEL, ou por papel: CASCADE_JUDGE_PLAN_PROVIDER etc).",
+  "providers": {
+    "claude": {
+      "_comment": "Receita minima medida 2026-06-12: --tools \"\" + --system-prompt + --setting-sources \"\" corta o overhead frio de 35.3k para ~3.9k tokens (-89%).",
+      "argv": ["claude", "-p", "--model", "{model}", "--setting-sources", "", "--tools", "", "--system-prompt", "{system}", "--output-format", "json", "@RESUME@"],
+      "resume_argv": ["--resume", "{session_id}"],
+      "prompt_via": "stdin",
+      "system_via": "argv",
+      "result": "json:result",
+      "session": "json:session_id",
+      "usage": "json:usage"
+    },
+    "claude-deepseek": {
+      "_comment": "DeepSeek via endpoint Anthropic-compativel do claude CLI. Requer DEEPSEEK_API_KEY no ambiente.",
+      "inherits": "claude",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "${DEEPSEEK_API_KEY}",
+        "ANTHROPIC_MODEL": "deepseek-chat",
+        "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-chat"
+      }
+    },
+    "codex": {
+      "_comment": "codex exec escreve a ultima mensagem em arquivo (-o). Prompt via stdin ('-'). Sem parsing de usage -> tokens.log registra approx_chars.",
+      "argv": ["codex", "exec", "-m", "{model}", "--skip-git-repo-check", "-o", "{out_file}", "-"],
+      "prompt_via": "stdin",
+      "system_via": "prompt",
+      "result": "file:{out_file}"
+    },
+    "agy": {
+      "_comment": "Gemini (Antigravity) como judge — para replicar a cascata com judge barato. Prompt via argv (agy -p nao le stdin).",
+      "argv": ["agy", "-p", "{prompt}"],
+      "prompt_via": "argv",
+      "system_via": "prompt",
+      "result": "stdout"
+    }
+  },
+  "roles": {
+    "judge.plan":   { "provider": "claude", "model": "opus" },
+    "judge.review": { "provider": "claude", "model": "opus" },
+    "judge.light":  { "provider": "claude", "model": "haiku" }
+  },
+  "budgets": {
+    "plan": 1,
+    "handshake": 2,
+    "review": 2,
+    "total": 5
+  },
+  "timeout_default": 600
+}

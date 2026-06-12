@@ -17,7 +17,7 @@ forte** (Opus/Fable, GPT, ...) apenas nos dois atos de alta alavancagem:
 - **Receita mínima de transporte** — `claude -p --tools "" --system-prompt ...`
   corta o overhead frio de ~35.3k para ~3.9k tokens (**−89%**, medido
   2026-06-12).
-- **Provider configurável** — judge em `providers.json`: Claude (opus/haiku),
+- **Provider configurável** — judge em `providers.json`: Claude (opus/sonnet),
   DeepSeek (via endpoint Anthropic-compatível do claude CLI), codex (OpenAI),
   agy (Gemini). Trocar = 1 linha de config ou 2 env vars.
 - **Multiplataforma** — wrapper único em Python stdlib (Windows/Linux/macOS);
@@ -132,7 +132,7 @@ python3 skills/llm-cascade/scripts/test_ask_judge.py
 
 # 2. transporte real ao judge (1 chamada barata)
 printf '# Brief: teste\n## Objetivo\nResponda um plano de 3 linhas para imprimir "oi" em python.\n' > /tmp/b.md
-python skills/llm-cascade/scripts/ask_judge.py --role plan --in /tmp/b.md --out /tmp/p.md --task-dir /tmp/lc-test --model haiku
+python skills/llm-cascade/scripts/ask_judge.py --role plan --in /tmp/b.md --out /tmp/p.md --task-dir /tmp/lc-test --model sonnet
 cat /tmp/p.md
 
 # 3. agy carregou o AGENTS.md?

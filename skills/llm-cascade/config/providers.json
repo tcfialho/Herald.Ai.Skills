@@ -39,7 +39,7 @@
   "roles": {
     "judge.plan":   { "provider": "claude", "model": "opus" },
     "judge.review": { "provider": "claude", "model": "opus" },
-    "judge.light":  { "provider": "claude", "model": "haiku" }
+    "judge.light":  { "provider": "claude", "model": "sonnet" }
   },
   "budgets": {
     "plan": 1,

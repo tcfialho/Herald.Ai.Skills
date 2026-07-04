@@ -1,11 +1,11 @@
 ---
 name: fix-my-code
-description: Structured Root Cause Analysis for software problems. Activate on errors, failures, unexpected behavior, regressions, or investigation requests.
+description: Structured 6-phase Root Cause Analysis (RCA) protocol — forensic diagnostic with evidence matrix, fault tree, and gated fix proposal. User-invoked only; do NOT self-activate on errors seen mid-session. Full rigor applies regardless of how trivial the problem looks.
 ---
 
 ```yaml
 activation_rules:
-  - Read all files at once before starting: SKILL.md, resources/phases.md, and resources/output-contract.md.
+  - Read resources/phases.md NOW, before any other action. Do NOT read resources/output-contract.md yet — it is loaded as the first action of Phase 4 (keeps Phases 1-3 context free for raw evidence).
   - Validate input against incident_context_contract. Request missing required fields before proceeding.
   - IF P0/P1 suspected — Propose containment/rollback immediately with a concrete action (specific commit to revert, kill switch, feature flag toggle, config rollback, or traffic disablement/isolation when applicable). Ask binary confirmation (Y/N) for the proposed action; investigation continues in parallel. Rollback/containment proposal must be temporally gated — only propose rollback for commits/config changes/deployments whose time window matches first_seen; do NOT propose rollback when temporal correlation is absent; if no temporally correlated change exists, propose non-destructive containment or continue investigation.
   - CRITICAL: Gather evidence FIRST. Trial-and-error is FORBIDDEN.
@@ -18,14 +18,6 @@ activation_rules:
 instruction_hierarchy:
   precedence: ['1-Safety: Constitutional gate + destructive action bans (NEVER overridden)', '2-Evidence: No fix without evidence, no root cause without supported hypothesis', '3-Process: Phase order, validation gates, confirmation', '4-User: Explicit user instructions', '5-Efficiency: Skip low-value sources, compress context']
   on_conflict: 'Apply highest level. Log: [AUTO-DECISION] Conflict: {A} vs {B} → {winner} (level {N} > {M}). NEVER silently discard.'
-```
-
-```yaml
-auto_activation:
-  mode: subjective_high_recall
-  signals: ['Functional mismatch: "not right", "unexpected result"', 'Visual/UX defect in implemented UI: icon state, misleading affordance, overlap, clipped text, broken layout, wrong visible state', 'Failure: "error", "crash", "broke", "unstable"', 'Flow blocked: "won''t load", "hanging", "frozen"', 'Evidence: "stack trace", "build failing", "timeout"', 'Post-change regression']
-  action: 'Open diagnostic directly. Prefer recall over precision.'
-  exclude: 'Pure taste/style preference, docs, naming, branding, architecture planning without runtime or implemented-UI defect.'
 ```
 
 ```yaml
@@ -73,22 +65,23 @@ decision_audit_trail:
 ```yaml
 workflow:
   pipeline: ['Phase 1: Discovery', 'Phase 2: Evidence Gathering', 'Phase 3: Fault Tree Analysis', 'Phase 4: Diagnostic Report', 'Phase 5: Solution & Prevention', 'Phase 6: Iteration Protocol']
-  execution_reference: 'Read [phases.md](resources/phases.md) for detailed phase actions, validations, self-refine loops, and error handling.'
-  output_reference: 'Read [output-contract.md](resources/output-contract.md) before Phase 4 for the exact report format, quality criteria, and output skeleton.'
+  execution_reference: 'Read [phases.md](resources/phases.md) at activation — it is the authoritative playbook for phase actions, per-phase anti_patterns, validations, self-refine loops, and error handling.'
+  output_reference: 'As the FIRST action of Phase 4, read [output-contract.md](resources/output-contract.md) for the exact report format, quality criteria, and output skeleton.'
   phase_summaries:
-    phase_1: 'Validate context, classify severity, discover MCP servers, inspect repository, probe external sources, build topology map (1-hop callers/callees/config/state/integrations) when symptom does not localize. IF P0/P1 suspected: propose temporally-gated containment with concrete action and request Y/N — investigation proceeds in parallel.'
-    phase_2: 'Build hypothesis matrix, lock symptom boundary, run symptom_reality_gate, choose the strongest non-mutating evidence technique, reproduce or explicitly classify why reproduction is unavailable, capture baseline, collect signals with Think→Act→Observe, analyze temporal correlation. ANY state-mutating probe requires paired teardown executed before Phase 4.'
-    phase_3: 'Decompose causal chain (OR/AND tree + 5 Whys), score hypotheses, cross-reference matrix, deliberate root cause selection (Tree of Thoughts triggered by relative gap < 0.20 OR second_confidence >= 0.50). If symptom_reality_gate produced no_defect_confirmed, misframed_symptom, or insufficient_evidence, do not invent a root cause.'
-    phase_4: 'Render report per output_contract. Run internal 5-Whys validation on Fix_Proposal BEFORE emitting. Validation artifact (strongest available type) MUST exist, target the cause, show wrong result pre-fix. Ask for user confirmation only when Fix_Proposal_Status=pending_confirmation.'
-    phase_5: 'Wait for explicit confirmation. Implement fix tied to evidence. Validation artifact must show expected result after fix (binding gate); suite must not regress. Add preventive controls.'
-    phase_6: 'On fix failure: compare error before/after, classify as same_error | different_error | build_or_suite_regression, apply prescribed action. Never patch blindly without new evidence. Escalate after 3 iterations.'
+    phase_1: 'Discovery: context, severity (P0/P1 → containment per activation_rules), sources, repo, topology map when symptom does not localize.'
+    phase_2: 'Evidence: hypothesis matrix, symptom boundary + reality gate, evidence ladder, reproduction + baseline, probes with paired teardown, temporal correlation.'
+    phase_3: 'Fault tree (OR/AND + 5 Whys), score hypotheses, deliberate root cause selection when competitors exist.'
+    phase_4: 'Read output contract, produce validation artifact, internal 5-Whys on fix, emit report, request confirmation when applicable.'
+    phase_5: 'After explicit confirmation only: implement, pass binding validation gate + regression gate, add preventive controls.'
+    phase_6: 'On failure: classify same_error | different_error | build_or_suite_regression, act per classification, escalate after 3 iterations.'
 ```
 
 ## Guardrails
 
 ```yaml
 anti_patterns:
-  never: ['Infer root cause from single signal', 'Skip report to jump to fix', 'Ignore contradictory evidence', 'Reproduce without baseline', 'Treat ambiguous user wording as a functional failure before symptom_reality_gate proves the failure type', 'Invent a code/config fix when the symptom is not confirmed', 'Use screenshot as first evidence when DOM/API/code/test/probe evidence can answer the question more directly', 'Production code change during Phase 1/2/4 (verification artifacts in .temp/ or test tree are allowed)', 'P0/P1 suspected without proposing temporally-gated containment in parallel with investigation', 'Propose rollback for commits/changes whose time window does not match first_seen', 'Autonomous decision without [AUTO-DECISION]', 'Root cause selection without deliberation when multiple candidates', 'Repeat same self-correction', 'Re-investigate confirmed findings', 'Silently discard conflicting rule', 'Same cognitive stance across phases', 'Fix_Proposal with hypothesis-validation steps or user-run manual probes', 'Phased solution depending on data the user collects after approval', 'Emit Fix_Proposal without a validation artifact that targets the cause and shows wrong result pre-fix', 'Use a weaker validation type without justifying why stronger ones do not apply', 'Accept "symptom disappeared" / "returns 200 now" as sufficient validation', 'Skip probe based on partial when_skip_OK conditions (all four required)', 'Leave probe-mutated state un-torn-down before Phase 4', 'Patch blindly after fix failure without classifying same/different/regression', 'Mark hypothesis status=refuted without falsification_evidence populated', 'Count evidence_for entries from the same source class as independent']
+  scope: 'Cross-phase invariants only. Each phase in phases.md carries its own anti_patterns list — enforce both.'
+  never: ['Skip the report and jump to a fix', 'Ignore contradictory evidence', 'Invent a code/config fix when the symptom is not confirmed', 'Production code change during Phase 1/2/4 (verification artifacts in .temp/ or test tree are allowed)', 'Autonomous decision without [AUTO-DECISION]', 'Silently discard a conflicting rule', 'Same cognitive stance across phases', 'Repeat the same self-correction', 'Re-investigate confirmed findings']
 ```
 
 ```yaml

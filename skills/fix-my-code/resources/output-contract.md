@@ -12,7 +12,7 @@ output_contract:
     - 'Hypotheses and Root_Cause: wrap ASCII trees in ```text blocks to preserve ├── └── │ characters.'
     - 'Fix_Proposal, Residual_Risks, Prevention: bullet lists (- item).'
     - 'Verification_and_Validation: bullet list (Plan + Expected outcome).'
-    - 'Decision: Diagnostic_Outcome, Fix_Proposal_Status (pending_confirmation|confirmed|rejected|not_applicable|needs_clarification), Decision (Go/No-go), Next_Step.'
+    - 'Decision: Diagnostic_Outcome, Fix_Proposal_Status (pending_confirmation|not_applicable|needs_clarification — these are the only values emittable in the Phase 4 report; confirmed/rejected exist only after the user responds and are never emitted here), Decision (Go/No-go), Next_Step.'
 
   quality:
     Incident: 'Symptom=what user sees not interpretation, Impact=scope+degree, Environment=OS/runtime/versions, First Seen=trigger correlation, Frequency=reproducibility, Probable Cause=evidence-based guess refined in Root_Cause, Failure Type=claimed_failure_type from symptom_reality_gate'

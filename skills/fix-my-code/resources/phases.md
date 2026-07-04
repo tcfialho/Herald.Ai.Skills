@@ -33,6 +33,7 @@ phase_1:
     metrics: ['test suite signatures', 'SLA dashboards', 'rollback history']
     traces: ['timestamp correlation', 'call graph inspection', 'DB/queue from logs']
   errors: 'Git unavailable or source unreachable → document, continue (non-blocking).'
+  anti_patterns: ['P0/P1 suspected without proposing temporally-gated containment in parallel with investigation', 'Propose rollback for commits/changes whose time window does not match first_seen']
 ```
 
 ## Phase 2: Evidence Gathering
@@ -152,6 +153,7 @@ phase_2:
     self_refine: { max: 2, log: '[SELF-REFINE] N: {weak} → {action}', rule: 'DIFFERENT remediation each.', on_exhaustion: prompt_user }
     checks: ['Sources selected from evidence_ladder, with screenshot/pixel used only when justified', 'Symptom boundary captured and scope drift parked or evidence-linked', 'Symptom_reality_gate captured claimed_failure_type + observed_artifact + category_verdict', 'Root cause routing gate executed when applicable, with branch chosen by same-run comparison', 'Stateful runtime gate executed when applicable before blaming source/provider', 'Matrix has required columns + ≥1 supported hypothesis OR diagnostic-only category_verdict explains why no fix is proposed']
     error: '>15min on hypothesis → park, next P-level'
+  anti_patterns: ['Infer root cause from a single signal', 'Reproduce without baseline', 'Treat ambiguous user wording as a functional failure before symptom_reality_gate proves the failure type', 'Use screenshot as first evidence when DOM/API/code/test/probe evidence can answer more directly', 'Skip probe based on partial when_skip_OK conditions (all four required)', 'Leave probe-mutated state un-torn-down before Phase 4', 'Mark hypothesis status=refuted without falsification_evidence populated', 'Count evidence_for entries from the same source class as independent']
 ```
 
 ## Phase 3: Fault Tree Analysis
@@ -181,6 +183,7 @@ phase_3:
   validation:
     self_refine: { max: 2, log: '[SELF-REFINE] N: {weak} → {action}', rule: 'DIFFERENT remediation each.', on_exhaustion: prompt_user }
     checks: ['All hypotheses scored (refine: score now with justification)', '≥1 falsified when 2+ hypotheses are candidates for root cause (i.e., when deliberate_selection is triggered). Single-hypothesis cases (e.g., deterministic errors fully accounted for by tool output + confirmatory read): log [AUTO-DECISION] single_hypothesis_no_alternatives reason={why alternatives were not generated} — do NOT invent a strawman hypothesis just to refute it.', 'Every [PRIMARY ROOT] backed by a supported hypothesis; every [SECONDARY ROOT] or [CONTRIBUTOR] backed by supported or supported_partial per evidence_matrix_contract (refine: link or demote)', 'Reached fixable defect (fail: escalate)']
+  anti_patterns: ['Root cause selection without deliberation when multiple candidates exist', 'Fabricate a fixable defect when category_verdict is no_defect_confirmed or insufficient_evidence']
 ```
 
 ## Phase 4: Diagnostic Report
@@ -188,7 +191,8 @@ phase_3:
 ```yaml
 phase_4:
   actions:
-    - render_report: 'Emit unified report per output_contract (see resources/output-contract.md).'
+    - load_contract: 'FIRST action of Phase 4: read resources/output-contract.md (report format, quality criteria, output skeleton).'
+    - render_report: 'Emit unified report per output_contract.'
     - validation_artifact:
         rule: 'A validation artifact is mandatory before emitting Fix_Proposal. For diagnostic-only outcomes, the symptom_reality_gate observed_artifact is mandatory instead. Use the strongest type available in the context. Weaker types require justification.'
         types_in_order_of_strength:
@@ -217,6 +221,7 @@ phase_4:
           Weak answer → switch to stronger alternative. None survives → demote to Residual_Risks or No-go.
   validation: ['Symptom_reality_gate artifact exists', 'For fix proposals: root cause backed by independent evidence', 'No contradictions unexplained', 'For fix proposals: causal chain complete', 'For fix proposals: fix passed 5-Whys (fail: revise)', 'For fix proposals: validation artifact exists, targets the cause, shows wrong result pre-fix (fail: BLOCK, return to Phase 2/3)']
   output: 'Emit per output_contract. Final confirmation line only when Fix_Proposal_Status=pending_confirmation; diagnostic-only outcomes end with the evidence-backed No-go/clarification next step.'
+  anti_patterns: ['Fix_Proposal with hypothesis-validation steps or user-run manual probes', 'Phased solution depending on data the user collects after approval', 'Emit Fix_Proposal without a validation artifact that targets the cause and shows wrong result pre-fix', 'Use a weaker validation type without justifying why stronger ones do not apply']
 ```
 
 ## Phase 5: Solution & Prevention
@@ -243,6 +248,7 @@ phase_5:
         on_any_condition_false: 'Do NOT implement. List under Prevention as a recommendation for the user to decide.'
         rationale: 'Prevents bugfix from silently expanding into refactor / new process / new tooling. The "same defect class" criterion blocks generic suggestions like "improve tests", "add observability", "review architecture".'
   error: 'Fix fails → Phase 6.'
+  anti_patterns: ['Accept "symptom disappeared" / "returns 200 now" as sufficient validation — the validation artifact must show the expected result']
 ```
 
 ## Phase 6: Iteration Protocol
@@ -272,6 +278,7 @@ phase_6:
         - 'Do NOT reopen RCA of the original cause — it remains supported.'
   status_values_added: { supported_partial: 'Cause was correct but did not fully explain the failure; an additional layer or contributor exists.' }
   escalation: 'After 3 iterations total (any category): report what is established vs unknown, request specific missing info from user.'
+  anti_patterns: ['Patch blindly after fix failure without classifying same_error / different_error / build_or_suite_regression']
 ```
 
 ## Operational Policies

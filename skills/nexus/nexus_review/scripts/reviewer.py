@@ -3,17 +3,20 @@
 Nexus Review — Reviewer
 
 CLI tool that the AI agent calls to homologate a completed /dev execution.
-The AI executes tests, build, and evaluates compliance. This script REGISTERS
-the results and computes a deterministic verdict from gates.
+THE SCRIPT EXECUTES regression, build and smoke commands itself (exit code =
+source of truth — the AI never self-reports pass/fail numbers) and computes
+a deterministic verdict from gates.
 
 Subcommands:
   CHECK:
     check-readiness    Verify backlog is 100% and evidence files exist
 
-  REPORT (AI executes, script registers):
-    report-regression  Register regression test results (all tests)
-    report-build       Register build result
-    report-compliance  Register EARS compliance per requirement
+  REPORT (script executes, script registers):
+    report-regression  Run the full test suite via --cmd and register result
+    report-build       Run the build via --cmd and register result
+    report-smoke       Run the smoke_cmd from the backlog (or --cmd override)
+    report-compliance  Register EARS compliance per requirement (legacy)
+    report-usecase     Register functional UC/flow validation
 
   CERTIFY:
     certify            Compute verdict from all gates, generate certificate
@@ -22,18 +25,21 @@ Subcommands:
     show               Display current review state
 
 Usage:
-  python reviewer.py .nexus/runs/001/review.json check-readiness --backlog .nexus/runs/001/backlog.json
-  python reviewer.py .nexus/runs/001/review.json report-regression --passed 25 --failed 0
-  python reviewer.py .nexus/runs/001/review.json report-build --passed --warnings 0
-  python reviewer.py .nexus/runs/001/review.json report-compliance --ear REQ-01 --status compliant --evidence "src/task.py:42"
-  python reviewer.py .nexus/runs/001/review.json certify
-  python reviewer.py .nexus/runs/001/review.json show
+  python reviewer.py check-readiness
+  python reviewer.py report-regression --cmd "python -m pytest tests/ -q"
+  python reviewer.py report-build --cmd "npx tsc --noEmit" --warnings 0
+  python reviewer.py report-smoke
+  python reviewer.py report-usecase --uc UC-01 --flow UC-01.FP --status validated --ears REQ-01
+  python reviewer.py certify
+  python reviewer.py show
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +52,84 @@ from pathlib import Path
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_CMD_TIMEOUT_DEFAULT = 600
+
+_TEST_COUNT_PATTERNS = [
+    (re.compile(r"(\d+)\s+passed"), re.compile(r"(\d+)\s+failed")),
+    (re.compile(r"(\d+)\s+passing"), re.compile(r"(\d+)\s+failing")),
+]
+
+
+def _parse_test_counts(output: str):
+    """Best-effort extraction of passed/failed counts from test runner output
+    (pytest, jest, vitest, mocha, unittest)."""
+    for pass_re, fail_re in _TEST_COUNT_PATTERNS:
+        passed_matches = pass_re.findall(output)
+        if passed_matches:
+            failed_matches = fail_re.findall(output)
+            failed = int(failed_matches[-1]) if failed_matches else 0
+            return int(passed_matches[-1]), failed
+    ran = re.search(r"Ran (\d+) tests?", output)
+    if ran:
+        total = int(ran.group(1))
+        fail_m = re.findall(r"failures=(\d+)", output)
+        err_m = re.findall(r"errors=(\d+)", output)
+        failed = (int(fail_m[-1]) if fail_m else 0) + (int(err_m[-1]) if err_m else 0)
+        return max(total - failed, 0), failed
+    return None, None
+
+
+def _run_cmd(cmd: str, cwd: Path, timeout: int = _CMD_TIMEOUT_DEFAULT) -> dict:
+    """Execute a shell command and capture exit code + output tail.
+    The exit code is the source of truth — the AI never self-reports results."""
+    start = datetime.now(timezone.utc)
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+        exit_code = proc.returncode
+        output = proc.stdout or ""
+        if proc.stderr:
+            output += ("\n" if output else "") + proc.stderr
+    except subprocess.TimeoutExpired:
+        exit_code = -1
+        output = f"TIMEOUT: comando excedeu {timeout}s"
+    except Exception as exc:  # noqa: BLE001 — reportado como falha de gate
+        exit_code = -2
+        output = f"ERRO ao executar comando: {exc}"
+    duration = (datetime.now(timezone.utc) - start).total_seconds()
+    tests_passed, tests_failed = _parse_test_counts(output)
+    return {
+        "cmd": cmd,
+        "exit_code": exit_code,
+        "duration_s": round(duration, 1),
+        "tests_passed": tests_passed,
+        "tests_failed": tests_failed,
+        "output_tail": output[-3000:],
+    }
+
+
+def _project_root_for(rpath: Path, args: argparse.Namespace) -> Path:
+    if getattr(args, "project_root", ""):
+        return Path(args.project_root)
+    nexus = _find_nexus_root()
+    return nexus.parent if nexus else rpath.parent.parent.parent.parent
+
+
+def _print_output_tail(result: dict, label: str) -> None:
+    tail = result.get("output_tail", "")[-1500:]
+    if tail:
+        print(f"--- OUTPUT {label} (final) ---", file=sys.stderr)
+        print(tail, file=sys.stderr)
+        print("--- FIM OUTPUT ---", file=sys.stderr)
 
 
 def _load(path: Path) -> dict:
@@ -74,6 +158,8 @@ def _normalize_review(data: dict) -> dict:
     data.setdefault("readiness", {})
     data.setdefault("regression", {})
     data.setdefault("build", {})
+    data.setdefault("smoke", {})
+    data.setdefault("smoke_cmd_expected", "")
     data.setdefault("compliance", [])
     data.setdefault("use_case_validation", [])
     data.setdefault("use_cases_expected", [])
@@ -262,6 +348,7 @@ def cmd_check_readiness(rpath: Path, args: argparse.Namespace) -> None:
     data["ears_expected"] = ears_ids
     data["uc_ears_expected"] = uc_ears_expected
     data["use_cases_expected"] = use_cases_expected
+    data["smoke_cmd_expected"] = backlog.get("smoke_cmd", "")
     _save(rpath, data)
 
     if not all_tasks_done:
@@ -281,6 +368,9 @@ def cmd_check_readiness(rpath: Path, args: argparse.Namespace) -> None:
     print(
         f"   Tasks: {completed}/{total} | UCs/Fluxos esperados: {len(use_cases_expected)} | EARS esperados: {len(ears_ids)}"
     )
+    smoke_expected = backlog.get("smoke_cmd", "")
+    if smoke_expected:
+        print(f"   Smoke esperado: {smoke_expected} (execute 'report-smoke')")
 
 
 # ------------------------------------------------------------------
@@ -290,34 +380,86 @@ def cmd_check_readiness(rpath: Path, args: argparse.Namespace) -> None:
 
 def cmd_report_regression(rpath: Path, args: argparse.Namespace) -> None:
     data = _load(rpath)
-    data["regression"] = {
-        "passed": args.passed,
-        "failed": args.failed,
-        "timestamp": _utcnow(),
-    }
+    project_root = _project_root_for(rpath, args)
+    timeout = args.timeout or _CMD_TIMEOUT_DEFAULT
+
+    print(f"Executando regressao: {args.cmd}")
+    result = _run_cmd(args.cmd, project_root, timeout)
+    result["timestamp"] = _utcnow()
+    data["regression"] = result
     _save(rpath, data)
 
-    total = args.passed + args.failed
-    if args.failed > 0:
-        print(f"REGRESSION: {args.failed} teste(s) falhando de {total}")
-    else:
-        print(f"OK Regression: {args.passed} teste(s) passando, 0 falhando")
+    passed = result["tests_passed"]
+    failed = result["tests_failed"]
+    if result["exit_code"] != 0 or (failed or 0) > 0:
+        _print_output_tail(result, "REGRESSAO")
+        print(
+            f"REGRESSION FALHOU (exit={result['exit_code']}"
+            + (f", {failed} falhando" if failed is not None else "")
+            + ") — corrija o codigo e re-execute este comando.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    counts = f"{passed} teste(s) passando, 0 falhando" if passed is not None else "exit=0"
+    print(f"OK Regression: {counts} ({result['duration_s']}s)")
 
 
 def cmd_report_build(rpath: Path, args: argparse.Namespace) -> None:
     data = _load(rpath)
-    data["build"] = {
-        "passed": args.passed,
-        "warnings": args.warnings,
-        "timestamp": _utcnow(),
-    }
+    project_root = _project_root_for(rpath, args)
+    timeout = args.timeout or _CMD_TIMEOUT_DEFAULT
+
+    print(f"Executando build: {args.cmd}")
+    result = _run_cmd(args.cmd, project_root, timeout)
+    result["timestamp"] = _utcnow()
+    result["warnings"] = args.warnings
+    result["passed"] = result["exit_code"] == 0
+    data["build"] = result
     _save(rpath, data)
 
-    if args.passed:
+    if result["passed"]:
         warn_note = f" ({args.warnings} warnings)" if args.warnings > 0 else ""
-        print(f"OK Build passed{warn_note}")
+        print(f"OK Build passed{warn_note} ({result['duration_s']}s)")
     else:
-        print(f"BUILD FALHOU")
+        _print_output_tail(result, "BUILD")
+        print(
+            f"BUILD FALHOU (exit={result['exit_code']}) — corrija e re-execute este comando.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def cmd_report_smoke(rpath: Path, args: argparse.Namespace) -> None:
+    data = _load(rpath)
+    cmd = args.cmd or data.get("smoke_cmd_expected", "")
+    if not cmd:
+        print(
+            "ERRO: nenhum smoke_cmd registrado no backlog e --cmd nao fornecido.",
+            file=sys.stderr,
+        )
+        print(
+            "   Registre no /dev com 'backlog.py set-smoke --cmd ...' ou passe --cmd aqui.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    project_root = _project_root_for(rpath, args)
+    timeout = args.timeout or _CMD_TIMEOUT_DEFAULT
+
+    print(f"Executando smoke: {cmd}")
+    result = _run_cmd(cmd, project_root, timeout)
+    result["timestamp"] = _utcnow()
+    data["smoke"] = result
+    _save(rpath, data)
+
+    if result["exit_code"] != 0:
+        _print_output_tail(result, "SMOKE")
+        print(
+            f"SMOKE FALHOU (exit={result['exit_code']}) — a aplicacao nao esta funcional ponta a ponta.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK Smoke passed ({result['duration_s']}s)")
 
 
 def cmd_report_compliance(rpath: Path, args: argparse.Namespace) -> None:
@@ -430,21 +572,51 @@ def cmd_certify(rpath: Path, _args: argparse.Namespace) -> None:
         missing = readiness.get("missing_evidence", [])
         gate_details["evidence_ok"] = f"Evidence faltando: {', '.join(missing[:5])}"
 
-    # GATE: Build
-    gates["build_passed"] = build.get("passed", False)
+    # GATE: Build (executado pelo script — exit code e a verdade)
+    gates["build_passed"] = build.get("exit_code", None) == 0
     if not gates["build_passed"]:
-        gate_details["build_passed"] = "Build falhou ou nao reportado"
+        if "exit_code" not in build:
+            gate_details["build_passed"] = (
+                "Build nao executado — rode 'report-build --cmd ...'"
+            )
+        else:
+            gate_details["build_passed"] = f"Build falhou (exit={build['exit_code']})"
 
-    # GATE: Regression
+    # GATE: Regression (executada pelo script — exit code e a verdade)
+    reg_exit = regression.get("exit_code", None)
+    reg_failed = regression.get("tests_failed")
+    reg_passed = regression.get("tests_passed")
     gates["regression_passed"] = (
-        regression.get("failed", -1) == 0 and regression.get("passed", 0) > 0
+        reg_exit == 0
+        and (reg_failed is None or reg_failed == 0)
+        and (reg_passed is None or reg_passed > 0)
     )
     if not gates["regression_passed"]:
-        failed = regression.get("failed", "?")
-        if failed == "?":
-            gate_details["regression_passed"] = "Regression nao reportada"
+        if reg_exit is None:
+            gate_details["regression_passed"] = (
+                "Regression nao executada — rode 'report-regression --cmd ...'"
+            )
+        elif reg_exit != 0:
+            gate_details["regression_passed"] = f"Suite falhou (exit={reg_exit})"
+        elif reg_passed == 0:
+            gate_details["regression_passed"] = "Nenhum teste executado pela suite"
         else:
-            gate_details["regression_passed"] = f"{failed} teste(s) falhando"
+            gate_details["regression_passed"] = f"{reg_failed} teste(s) falhando"
+
+    # GATE: Smoke (somente se o backlog declarou smoke_cmd)
+    smoke = data.get("smoke", {})
+    smoke_expected = data.get("smoke_cmd_expected", "")
+    if smoke_expected:
+        gates["smoke_passed"] = smoke.get("exit_code", None) == 0
+        if not gates["smoke_passed"]:
+            if "exit_code" not in smoke:
+                gate_details["smoke_passed"] = (
+                    f"Smoke nao executado — rode 'report-smoke' (cmd: {smoke_expected})"
+                )
+            else:
+                gate_details["smoke_passed"] = (
+                    f"Smoke falhou (exit={smoke['exit_code']}) — app nao funcional ponta a ponta"
+                )
 
     # GATE: Use case validation (primary)
     validated_flow_keys = {
@@ -549,11 +721,15 @@ def _generate_certificate(rpath: Path, data: dict) -> Path:
     use_cases_expected = data.get("use_cases_expected", [])
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    total_tests = regression.get("passed", 0) + regression.get("failed", 0)
+    reg_passed = regression.get("tests_passed") or 0
+    reg_failed = regression.get("tests_failed") or 0
+    total_tests = reg_passed + reg_failed
     warnings = build.get("warnings", 0)
     validated_flows = sum(
         1 for item in use_case_validation if item.get("status") == "validated"
     )
+    smoke = data.get("smoke", {})
+    smoke_expected = data.get("smoke_cmd_expected", "")
 
     coverage = _integrated_ears_coverage(compliance, use_case_validation, ears_expected)
     integrated_covered_count = len(coverage["covered_all"])
@@ -570,8 +746,20 @@ def _generate_certificate(rpath: Path, data: dict) -> Path:
         "",
         "## Evidencias de Homologacao",
         "",
-        f"- **Build**: PASS" + (f" ({warnings} warnings)" if warnings else ""),
-        f"- **Regression Tests**: {regression.get('passed', 0)}/{total_tests} PASSED",
+        f"- **Build**: PASS" + (f" ({warnings} warnings)" if warnings else "")
+        + (f" — `{build.get('cmd', '')}`" if build.get("cmd") else ""),
+        (
+            f"- **Regression Tests**: {reg_passed}/{total_tests} PASSED"
+            if regression.get("tests_passed") is not None
+            else f"- **Regression Tests**: PASS (exit {regression.get('exit_code')}, contagem indisponivel)"
+        )
+        + (f" — `{regression.get('cmd', '')}`" if regression.get("cmd") else ""),
+        f"- **Smoke**: "
+        + (
+            f"PASS — `{smoke.get('cmd', '')}`"
+            if smoke_expected and smoke.get("exit_code") == 0
+            else "N/A (sem smoke_cmd registrado)"
+        ),
         f"- **Use Cases/Flows**: {validated_flows}/{len(use_cases_expected)} validated",
         f"- **EARS Coverage (integrated)**: {integrated_covered_count}/{len(ears_expected)} covered",
         f"- **Legacy compliance reports**: {legacy_compliant_count}/{len(ears_expected)} compliant",
@@ -588,10 +776,13 @@ def _generate_certificate(rpath: Path, data: dict) -> Path:
         "evidence_ok": "Evidence Files",
         "build_passed": "Build",
         "regression_passed": "Regression Tests",
+        "smoke_passed": "Smoke (app funcional)",
         "use_cases_validated": "Use Cases/Flows",
         "ears_covered": "EARS Coverage",
     }
     for gate_id, label in gate_labels.items():
+        if gate_id not in gates:
+            continue
         status = "PASS" if gates.get(gate_id) else "FAIL"
         lines.append(f"| {label} | {status} |")
 
@@ -662,10 +853,25 @@ def cmd_show(rpath: Path, _args: argparse.Namespace) -> None:
 
     regression = data.get("regression", {})
     if regression:
-        rpassed = regression.get("passed", 0)
-        rfailed = regression.get("failed", 0)
-        icon = "[x]" if rfailed == 0 and rpassed > 0 else "[ ]"
-        print(f"  {icon} Regression: {rpassed} passed, {rfailed} failed")
+        rexit = regression.get("exit_code")
+        rpassed = regression.get("tests_passed")
+        rfailed = regression.get("tests_failed")
+        icon = "[x]" if rexit == 0 and not rfailed else "[ ]"
+        counts = (
+            f"{rpassed} passed, {rfailed or 0} failed"
+            if rpassed is not None
+            else f"exit={rexit}"
+        )
+        print(f"  {icon} Regression: {counts}")
+
+    smoke = data.get("smoke", {})
+    smoke_expected = data.get("smoke_cmd_expected", "")
+    if smoke_expected:
+        if smoke:
+            icon = "[x]" if smoke.get("exit_code") == 0 else "[ ]"
+            print(f"  {icon} Smoke: exit={smoke.get('exit_code')}")
+        else:
+            print(f"  [ ] Smoke: pendente (execute 'report-smoke')")
 
     use_case_validation = data.get("use_case_validation", [])
     expected_flows = data.get("use_cases_expected", [])
@@ -726,16 +932,56 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     s = sub.add_parser(
-        "report-regression", help="Registrar resultado de testes regressivos"
+        "report-regression",
+        help="Executar a suite completa de testes — o SCRIPT roda o comando (exit code = gate)",
     )
-    s.add_argument("--passed", type=int, required=True, help="Testes que passaram")
-    s.add_argument("--failed", type=int, required=True, help="Testes que falharam")
+    s.add_argument(
+        "--cmd",
+        required=True,
+        help="Comando da suite completa (ex: 'python -m pytest tests/ -q')",
+    )
+    s.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help=f"Timeout em segundos (default: {_CMD_TIMEOUT_DEFAULT})",
+    )
+    s.add_argument("--project-root", default="", help="Raiz do projeto (auto-descoberta)")
 
-    s = sub.add_parser("report-build", help="Registrar resultado do build")
-    bg = s.add_mutually_exclusive_group(required=True)
-    bg.add_argument("--passed", action="store_true", help="Build passou")
-    bg.add_argument("--failed", action="store_true", help="Build falhou")
-    s.add_argument("--warnings", type=int, default=0, help="Numero de warnings")
+    s = sub.add_parser(
+        "report-build",
+        help="Executar o build — o SCRIPT roda o comando (exit code = gate)",
+    )
+    s.add_argument(
+        "--cmd", required=True, help="Comando de build (ex: 'npx tsc --noEmit')"
+    )
+    s.add_argument(
+        "--warnings", type=int, default=0, help="Warnings nao-resolviveis remanescentes"
+    )
+    s.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help=f"Timeout em segundos (default: {_CMD_TIMEOUT_DEFAULT})",
+    )
+    s.add_argument("--project-root", default="", help="Raiz do projeto (auto-descoberta)")
+
+    s = sub.add_parser(
+        "report-smoke",
+        help="Executar o smoke_cmd registrado no backlog (app funcional ponta a ponta)",
+    )
+    s.add_argument(
+        "--cmd",
+        default="",
+        help="Override do smoke_cmd (default: usa o registrado no backlog)",
+    )
+    s.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help=f"Timeout em segundos (default: {_CMD_TIMEOUT_DEFAULT})",
+    )
+    s.add_argument("--project-root", default="", help="Raiz do projeto (auto-descoberta)")
 
     s = sub.add_parser("report-compliance", help="Registrar compliance de um EARS")
     s.add_argument("--ear", required=True, help="ID do EARS (ex: REQ-01)")
@@ -784,6 +1030,7 @@ _ACTIONS = {
     "check-readiness": cmd_check_readiness,
     "report-regression": cmd_report_regression,
     "report-build": cmd_report_build,
+    "report-smoke": cmd_report_smoke,
     "report-compliance": cmd_report_compliance,
     "report-usecase": cmd_report_usecase,
     "certify": cmd_certify,

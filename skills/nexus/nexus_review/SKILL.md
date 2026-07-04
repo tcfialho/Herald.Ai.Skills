@@ -57,10 +57,13 @@ A IA **NUNCA** escreve review.json diretamente. Toda leitura e escrita passa por
 
 ```
 CHECK:     check-readiness
-REPORT:    report-regression, report-build, report-usecase, report-compliance (legado)
+REPORT:    report-regression, report-build, report-smoke, report-usecase, report-compliance (legado)
 CERTIFY:   certify
 DISPLAY:   show
 ```
+
+> **MODELO DE VERIFICAÇÃO: "O SCRIPT EXECUTA, O SCRIPT MEDE".**
+> `report-regression`, `report-build` e `report-smoke` recebem o **comando** via `--cmd` e o **executam via subprocess** — o exit code é a verdade registrada. A IA não digita números de testes; qualquer resultado vem da execução real feita pelo script.
 
 > **Nota:** Os scripts auto-descobrem `.nexus/` e a run ativa a partir do diretório de trabalho. Paths explícitos como primeiro argumento ainda são aceitos para cenários especiais.
 
@@ -101,7 +104,7 @@ A IA roda **TODOS** os testes do projeto de forma regressiva (unitários + aceit
 
 **LOOP OBRIGATÓRIO — repita até 0 falhas:**
 
-1. Execute o test runner completo da stack:
+1. Execute o test runner completo da stack localmente (feedback rápido):
 ```bash
 python -m pytest tests/ -v
 # OU
@@ -109,12 +112,11 @@ npx vitest run
 # OU
 npx jest
 ```
-2. Se **todos passaram**: reporte o resultado e avance.
-3. Se **algum falhou**: leia o traceback completo de cada falha, identifique a causa raiz, corrija o código, e volte ao passo 1. **NÃO reporte `--failed > 0` sem ter tentado corrigir.**
+2. Se **algum falhou**: leia o traceback completo de cada falha, identifique a causa raiz, corrija o código, e volte ao passo 1.
+3. Se **todos passaram**: registre via `report-regression --cmd` — **o script re-executa o comando e mede o resultado** (exit code != 0 = rejeitado na hora):
 
 ```bash
-# Somente após 0 falhas confirmadas:
-python scripts/reviewer.py report-regression --passed 25 --failed 0
+python scripts/reviewer.py report-regression --cmd "python -m pytest tests/ -q"
 ```
 
 **Cuidado com regressão em cascata:** ao corrigir um bug, re-execute TODOS os testes novamente — a correção pode ter quebrado outra coisa.
@@ -155,16 +157,22 @@ python -m py_compile src/**/*.py
    - Use as ferramentas de lint que o projeto já tiver configuradas
 
 4. Se **erros ou warnings relevantes existirem**: corrija o código e volte ao passo 1.
-5. Se **limpo**: reporte o resultado.
+5. Se **limpo**: registre via `report-build --cmd` — **o script re-executa o build e mede o resultado**:
 
 ```bash
-# Somente após build limpo:
-python scripts/reviewer.py report-build --passed --warnings 0
+python scripts/reviewer.py report-build --cmd "npx tsc --noEmit"
 # Se houver warnings não-críticos que não podem ser resolvidos:
-python scripts/reviewer.py report-build --passed --warnings 3
+python scripts/reviewer.py report-build --cmd "npm run build" --warnings 3
 ```
 
-**Critério:** Build deve PASSAR. Warnings devem ser minimizados — corrija todos que for possível. Reporte apenas os que genuinamente não podem ser resolvidos (ex: warning de dependência externa).
+**Critério:** Build deve PASSAR (exit 0 na execução feita pelo script). Warnings devem ser minimizados — corrija todos que for possível. Reporte apenas os que genuinamente não podem ser resolvidos (ex: warning de dependência externa).
+
+6. **Smoke (se o backlog registrou `smoke_cmd`):** o script executa o comando que prova que a aplicação funciona ponta a ponta:
+
+```bash
+python scripts/reviewer.py report-smoke
+```
+> O comando vem do `smoke_cmd` registrado no `/dev` (`backlog.py set-smoke`). Se falhar, a aplicação não está funcional — corrija a integração (boot, wiring, config) e re-execute.
 
 ---
 
@@ -207,8 +215,9 @@ O script computa o veredicto a partir de gates determinísticos com foco funcion
 |------|---------------|-------|
 | **TASKS** | Todas as tasks completed | `check-readiness` |
 | **EVIDENCE** | Todos evidence files existem | `check-readiness` |
-| **BUILD** | Build passou | `report-build` |
-| **REGRESSION** | 0 testes falhando, > 0 passando | `report-regression` |
+| **BUILD** | Build executado pelo script com exit 0 | `report-build --cmd` |
+| **REGRESSION** | Suite executada pelo script com exit 0 e 0 falhas | `report-regression --cmd` |
+| **SMOKE** | `smoke_cmd` executado com exit 0 (só existe se o backlog registrou smoke) | `report-smoke` |
 | **UC FLOWS** | Todos os fluxos esperados validados | `report-usecase` |
 | **EARS COVERAGE** | Todos os EARS cobertos por UC/compliance | `report-usecase` + `report-compliance` |
 
@@ -235,8 +244,9 @@ NEEDS_REVISION → qualquer gate FALSE → lista quais falharam
 |------|----------------|---------------|
 | **tasks_complete** | Tasks pendentes no backlog | Volte ao `/dev` e complete as tasks faltantes. `/review` não pode prosseguir sem 100%. |
 | **evidence_ok** | Arquivos `evidence/{TASK-XXX}.json` faltantes | Identifique quais tasks não têm evidence. Re-execute `backlog.py complete` para essas tasks. |
-| **build_passed** | Build/compilação falhou | Execute o build da stack. Leia os erros. Corrija o código. Re-execute e reporte via `report-build --passed`. |
-| **regression_passed** | Testes falhando na suíte completa | Execute o test runner completo. Leia cada traceback. Corrija os bugs — cuidado com regressão introduzida por correções anteriores. Re-execute e reporte via `report-regression`. |
+| **build_passed** | Build/compilação falhou ou não foi executado | Corrija o código com base no output impresso pelo script. Re-execute `report-build --cmd "..."` até exit 0. |
+| **regression_passed** | Testes falhando na suíte completa ou suíte não executada | Corrija os bugs com base no output impresso — cuidado com regressão introduzida por correções anteriores. Re-execute `report-regression --cmd "..."` até 0 falhas. |
+| **smoke_passed** | `smoke_cmd` falhou ou não foi executado | A aplicação não funciona ponta a ponta apesar dos testes verdes. Rode o smoke manualmente, corrija a integração (boot, wiring, config) e re-execute `report-smoke`. |
 | **use_cases_validated** | Fluxos UC esperados sem validação funcional | Releia `use_cases_expected`, execute cenários faltantes e reporte via `report-usecase --status validated`. |
 | **ears_covered** | EARS sem cobertura por validação de UC/compliance | Vincule EARS aos cenários funcionais via `report-usecase --ears ...`; use `report-compliance` apenas se precisar complementar transição. |
 
@@ -282,7 +292,8 @@ Se **sim**:
 |------|----------|
 | Tasks | 100% completed |
 | Evidence | Todos os evidence files existem |
-| Build | PASS |
-| Regression | 0 failed, > 0 passed |
+| Build | Exit 0 na execução feita pelo script (`report-build --cmd`) |
+| Regression | Exit 0 e 0 falhas na execução feita pelo script (`report-regression --cmd`) |
+| Smoke | Exit 0 (`report-smoke`) — obrigatório quando o backlog registrou `smoke_cmd` |
 | Use Cases/Flows | 100% validated |
 | EARS Coverage | 100% cobertos por UC/compliance |

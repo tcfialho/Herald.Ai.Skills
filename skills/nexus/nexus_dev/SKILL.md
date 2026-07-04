@@ -63,13 +63,16 @@ Executar **TODAS** as tasks do plano sequencialmente, sem interrupção, produzi
 A IA **NUNCA** lê arquivos de estado diretamente (backlog.json, spec.json). Toda leitura e escrita passa por `backlog.py`:
 
 ```
-BUILD:    init, add-story, add-criterio, add-task
-EXECUTE:  start, complete, fail
+BUILD:    init, add-story, add-criterio, add-task, set-smoke
+EXECUTE:  start, complete, commit, fail
 CONTEXT:  next, context, recovery
 DISPLAY:  progress, show, validate
 ```
 
 O `backlog.json` é a **única fonte de verdade** durante `/dev`. Contém: stories, tasks, status, contexto do plano (decisions, UC↔EARS, arquitetura, dependências, entidades), qualidade de testes e log de execução.
+
+> **MODELO DE VERIFICAÇÃO: "O SCRIPT EXECUTA, O SCRIPT MEDE".**
+> O `complete` **executa o `verify_cmd` da task via subprocess** e usa o exit code como verdade. A IA não reporta números de testes — qualquer auto-relato é ignorado. Ao fechar uma story, o script re-executa os `verify_cmd` de todas as tasks já completadas (regressão cumulativa). Ao fechar o plano, executa o `smoke_cmd`. Não há como completar uma task com teste quebrado.
 
 ---
 
@@ -148,6 +151,18 @@ Para cada história, quebre em tasks atômicas e registre via `backlog.py`:
 python scripts/backlog.py add-task --story-ref US-UC01-FP --id TASK-001 --title "Criar schema da tabela Tarefa" --tipo "Dados" --nivel 0 --objetivo "Criar migration com tabela tarefas" --pre-condicao "Nenhuma" --pos-condicao "Tabela tarefas existe no banco" --diretiva "Integracao" --verify-cmd "python -m pytest tests/test_schema.py -x -q" --files "src/migrations/001.sql" "tests/test_schema.py" --ears-refs "REQ-01"
 ```
 
+**Rastreabilidade critério↔task (OBRIGATÓRIA):** toda task de Integração (nível 2) DEVE declarar quais critérios Gherkin da história ela cobre, via `--criterio-refs` (índices 1-based na ordem em que foram registrados com `add-criterio`):
+```bash
+python scripts/backlog.py add-task --story-ref US-UC01-FP --id TASK-004 --title "Integrar criacao de tarefa" --tipo "Integracao" --nivel 2 --objetivo "Fio UI->API->dados do fluxo de criacao" --verify-cmd "python -m pytest tests/acceptance/test_create.py -x -q" --files "src/integration/create.js" "tests/acceptance/test_create.py" --criterio-refs 1 2 --dependencies TASK-001 TASK-002 TASK-003
+```
+> O `backlog.py validate` **FALHA** se qualquer critério de qualquer história ficar sem task de cobertura. Não há como pular esta regra.
+
+**Smoke command (registre logo após as tasks):** se o projeto tem entrypoint executável (servidor, CLI, página), registre o comando que prova que a aplicação **funciona ponta a ponta** (exit 0 = OK):
+```bash
+python scripts/backlog.py set-smoke --cmd "python -m pytest tests/smoke/test_boot.py -x -q"
+```
+> O script executa o smoke automaticamente no `complete` da última task do plano e no `/review`. Se a aplicação não sobe, o plano não fecha. Omita apenas para bibliotecas puras sem runtime.
+
 **Regras de Fatiamento por Camada Técnica:**
 
 | Tipo | Escopo | Exemplo |
@@ -189,6 +204,7 @@ A Pré-condição de uma Task **nunca é simulada**. Se a Task da API depende do
 > ⚠️ **REGRA DO `verify_cmd`:** Todo task DEVE ter um `verify_cmd` preenchido.
 > O comando deve ser o **test runner real** da stack (pytest, vitest, jest, etc.).
 > O agente é **PROIBIDO** de alterar o `verify_cmd` depois de definido.
+> **O `complete` EXECUTA este comando via subprocess** — o exit code decide o gate. Um `verify_cmd` que não roda no ambiente é uma task que nunca completa; teste o comando antes de registrá-lo.
 
 **Validação e exibição obrigatória após registrar todas as tasks:**
 ```bash
@@ -216,6 +232,7 @@ Envelope padrão da entrega YAML:
 - `dependencies_context`
 - `progress`
 - `quality_gate`
+- `procedure` ← **passo a passo obrigatório desta task (TDD ou aceitação Gherkin, com os comandos exatos). SIGA-O NA ORDEM — ele substitui qualquer memória sua sobre o fluxo.**
 
 Compatibilidade legada permanece disponível com `--format text`.
 
@@ -239,7 +256,7 @@ Para cada iteração:
    python scripts/backlog.py progress --format yaml
    → Copie o output COMPLETO e inclua na sua resposta de chat como bloco de código.
 
-4. IMPLEMENTAR A TASK:
+4. IMPLEMENTAR A TASK seguindo o bloco `procedure` entregue pelo `next`:
    - Código 100% real (zero mocks, zero TODOs)
    - Error handling completo
    - Sem return {} ou pass vazio
@@ -247,32 +264,36 @@ Para cada iteração:
 5. VALIDATION GATE (antes de completar):
    PASSO A — Build/Compile
    PASSO B — Lint/Type-check
-   PASSO C — Executar testes da task e anotar resultado (quantos passaram/falharam)
+   PASSO C — Rodar o verify_cmd localmente e confirmar 0 falhas
    PASSO D — Resolução de dependências no ambiente real
 
-6. Completar a task (claims explícitas + auditoria automática):
+6. Completar a task (O SCRIPT EXECUTA o verify_cmd — nada de auto-relato):
    python scripts/backlog.py complete TASK-XXX \
-     --test-files tests/test_schema.py tests/test_api.py \
-     --test-passed 3 --test-failed 0
-   
-   A IA declara os resultados via argumentos. O script audita:
-     GATE 1 — task.files existem no disco
-     GATE 2 — anti-mock scan nos arquivos de implementação
-     GATE 3 — test-files existem no disco
-     GATE 4 — test-failed == 0 e test-passed > 0
-   O script gera automaticamente evidence/{TASK-XXX}.json com claims + audit.
-   
-   Se houver falha no gate TEST_RESULT, o backlog entra em estado **blocked** e os comandos
-   `next/context` passam a recusar entrega de task até nova conclusão bem-sucedida (`complete` com testes verdes).
-   
+     --test-files tests/test_schema.py tests/test_api.py
+
+   O script executa e audita:
+     GATE FILES      — task.files existem no disco
+     GATE TESTS      — test-files existem no disco
+     GATE VERIFY     — o script RODA o verify_cmd; exit code != 0 = rejeitado
+     GATE REGRESSION — ao fechar a story, re-executa os verify_cmds de TODAS
+                       as tasks já completadas (integração cumulativa)
+     GATE SMOKE      — ao fechar o plano, executa o smoke_cmd registrado
+     WARNING MOCKS   — scan de placeholders (não bloqueia; a prova real é o VERIFY)
+   O script gera automaticamente evidence/{TASK-XXX}.json com o resultado MEDIDO
+   (exit code, contagem de testes, output).
+
+   Se VERIFY/REGRESSION/SMOKE falhar, o backlog entra em estado **blocked** e os comandos
+   `next/context` recusam entrega de task até um `complete` bem-sucedido.
+
    SE REJEITADO: corrija e re-submeta. Não avance.
    SE CIRCUIT BREAKER (3 falhas): HALT e peça ajuda ao usuário.
-   
+
    Para registrar falha explicitamente:
    python scripts/backlog.py fail TASK-XXX --error "descricao do erro"
 
-7. Micro-commit atômico (somente se complete aceito):
-   git add -A && git commit -m "feat(scope): descricao"
+7. Micro-commit atômico (somente se complete aceito — o script roda o git):
+   python scripts/backlog.py commit TASK-XXX
+   # mensagem customizada (opcional): --message "feat(scope): descricao"
 
 8. Exibir progresso atualizado no chat (OBRIGATÓRIO — copiar output do terminal para a resposta):
    python scripts/backlog.py progress
@@ -311,9 +332,10 @@ Se o bloco de progresso não aparece na resposta de chat, o usuário não tem fe
 | Gate | Causa típica | O que fazer |
 |------|-------------|------------|
 | **FILES** | Arquivo declarado em `task.files` não foi criado no disco | Crie o arquivo faltante. Se o path está errado no código, corrija o código — NÃO altere a definição da task. |
-| **MOCKS** | Código de implementação contém placeholder (`pass`, `TODO`, `return {}`) | Abra o arquivo:linha indicado na rejeição. Substitua o placeholder por implementação real. Releia o objetivo da task se necessário. |
 | **TESTS** | Arquivo de teste declarado em `--test-files` não existe no disco | Crie o arquivo de teste. Se esqueceu de criá-lo, siga o ciclo TDD: escreva o teste primeiro, depois implemente. |
-| **TEST_RESULT** | Testes falhando ou nenhum teste executado | Execute o `verify_cmd` da task. Leia o traceback completo. Corrija o bug no código (não no teste, a menos que o teste esteja errado). Re-execute e confirme 0 falhas antes de re-submeter. |
+| **VERIFY** | O script executou o `verify_cmd` e ele retornou exit != 0 | Leia o output do comando impresso na rejeição (traceback completo). Corrija o bug no código (não no teste, a menos que o teste esteja errado). Rode o `verify_cmd` localmente até exit 0 e re-submeta. Se o gate diz "task sem verify_cmd", registre o test runner real via `add-task` (upsert). |
+| **REGRESSION** | Ao fechar a story, um `verify_cmd` de task anterior quebrou | Sua task nova quebrou código que já funcionava. Leia o output impresso, identifique qual teste antigo falhou e corrija SEM desfazer a funcionalidade nova. Re-submeta. |
+| **SMOKE** | O `smoke_cmd` falhou ao fechar o plano | Os testes unitários passam mas a aplicação não funciona ponta a ponta (boot, wiring, config). Execute o smoke manualmente, leia o erro e corrija a integração. |
 
 **Escalação progressiva (o script informa a tentativa no output):**
 - **Tentativa 2 (mesmo gate):** Releia o contexto completo da task via `context --task`. Sua correção anterior não resolveu — mude a abordagem fundamentalmente.
@@ -321,21 +343,21 @@ Se o bloco de progresso não aparece na resposta de chat, o usuário não tem fe
 
 ---
 
-### Passo 5 — Anti-Mock Enforcement & Evidence Model
+### Passo 5 — Evidence Model & Anti-Mock Warning
 
-O comando `complete` opera no modelo **"IA declara, Script audita"**:
+O comando `complete` opera no modelo **"O Script executa, o Script mede"**:
 
-1. **A IA executa os testes** e reporta o resultado via `--test-passed` / `--test-failed`
-2. **O script audita** as claims da IA (arquivos existem? mocks? testes reportados como passando?)
-3. **O script gera** `evidence/{TASK-XXX}.json` automaticamente com o dossiê completo
+1. **O script executa o `verify_cmd`** da task via subprocess — exit code é a verdade
+2. **O script audita** o resto (arquivos existem? test files existem? regressão da story? smoke?)
+3. **O script gera** `evidence/{TASK-XXX}.json` automaticamente com o resultado MEDIDO (exit code, contagens, output)
 
-O anti-mock scan varre **apenas arquivos de implementação** (exclui test files declarados em `--test-files`), buscando: `# TODO`, `# FIXME`, `pass`, `raise NotImplementedError`, `return {}`, `return []`, `mock_`, `fake_`, `dummy_`
+O anti-mock scan varre **apenas arquivos de implementação** (exclui test files declarados em `--test-files`), buscando: `# TODO`, `# FIXME`, `pass`, `raise NotImplementedError`, `return {}`, `return []`, `mock_`, `fake_`, `dummy_`. **É um WARNING, não um gate** — código legítimo pode conter esses padrões, e a prova real de implementação é o VERIFY. Mas se o aviso apontar um placeholder de verdade, corrija imediatamente.
 
 Se qualquer gate falhar, o `complete` rejeita a transição e incrementa o contador de falhas.
 
 **PROIBIDO absolutamente em código de implementação:**
 - `# TODO`, `# FIXME`
-- `pass` em corpo de função
+- `pass` em corpo de função como implementação
 - `raise NotImplementedError`
 - `return {}`, `return []` como implementação real
 - Variáveis com nomes `mock_`, `fake_`, `dummy_`
@@ -369,18 +391,15 @@ Tasks de integração (nível 2) incluem testes de aceitação que cobrem os cri
 5. Reportar no complete
 ```
 
-**A IA é responsável por executar os testes e reportar o resultado no `complete`:**
+**A IA roda os testes localmente para se orientar; a medição oficial é do script:**
 
 ```bash
-# 1. IA executa os testes
+# 1. IA executa os testes localmente ate 0 falhas (feedback rapido)
 python -m pytest tests/test_schema.py -x -q
 
-# 2. IA anota: 3 passed, 0 failed
-
-# 3. IA chama complete com as claims
+# 2. IA chama complete — o SCRIPT re-executa o verify_cmd e mede o resultado
 python scripts/backlog.py complete TASK-001 \
-  --test-files tests/test_schema.py \
-  --test-passed 3 --test-failed 0
+  --test-files tests/test_schema.py
 ```
 
 Comandos de teste por stack:
@@ -398,8 +417,8 @@ npx jest {pattern}
 node --input-type=module <<< "import {fn} from './{arquivo}'; console.assert(fn(x) === y)"
 ```
 
-Se o test runner não está instalado: **instale na hora**.
-Se falhar: **corrija antes de completar. Nunca reporte `--test-failed > 0`.**
+Se o test runner não está instalado: **instale na hora** (o `complete` vai executá-lo — sem runner, a task nunca fecha).
+Se falhar: **corrija antes de completar.** Submeter `complete` com teste quebrado só consome uma tentativa do circuit breaker.
 
 ### Passo 7 — Plan Completion
 
@@ -437,11 +456,10 @@ Informe ao usuário:
 
 O `/dev` está COMPLETO quando:
 - [ ] `backlog.py progress` mostra 100%
-- [ ] Todas as tasks têm status `completed`
+- [ ] Todas as tasks têm status `completed` (o que já prova: verify_cmds executados pelo script com exit 0, regressão por story limpa e smoke_cmd passando)
 - [ ] Build passa sem erros
-- [ ] Testes passam
 - [ ] Nenhum arquivo contém mocks ou TODOs
-- [ ] Commits seguem Conventional Commits: `type(scope): desc`
+- [ ] Commits seguem Conventional Commits (`backlog.py commit` já garante o formato)
 - [ ] Feature branch pushed
 
 ---

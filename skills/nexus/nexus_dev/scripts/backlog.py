@@ -16,11 +16,16 @@ Subcommands:
     init          Create backlog.json from a finalized spec.json
     add-story     Register a user story
     add-criterio  Add a Gherkin criterion to a story
-    add-task      Register an atomic task under a story
+    add-task      Register an atomic task under a story (--criterio-refs
+                  liga a task aos criterios Gherkin que ela cobre)
+    set-smoke     Register the smoke command (app boots / responds)
 
   EXECUTE:
     start         Mark a task as in_progress
-    complete      Validate + mark as completed (anti-mock + verify_cmd)
+    complete      THE SCRIPT RUNS verify_cmd itself (exit code = gate),
+                  runs cumulative regression when a story closes and the
+                  smoke command when the plan closes
+    commit        Atomic conventional commit for a completed task
     fail          Record a task failure
 
   CONTEXT (READ):
@@ -47,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -63,6 +69,76 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_CMD_TIMEOUT_DEFAULT = 600
+
+_TEST_COUNT_PATTERNS = [
+    (re.compile(r"(\d+)\s+passed"), re.compile(r"(\d+)\s+failed")),
+    (re.compile(r"(\d+)\s+passing"), re.compile(r"(\d+)\s+failing")),
+]
+
+
+def _parse_test_counts(output: str) -> tuple[Optional[int], Optional[int]]:
+    """Best-effort extraction of passed/failed counts from test runner output
+    (pytest, jest, vitest, mocha, unittest). Returns (None, None) if unrecognized."""
+    for pass_re, fail_re in _TEST_COUNT_PATTERNS:
+        passed_matches = pass_re.findall(output)
+        if passed_matches:
+            failed_matches = fail_re.findall(output)
+            failed = int(failed_matches[-1]) if failed_matches else 0
+            return int(passed_matches[-1]), failed
+    ran = re.search(r"Ran (\d+) tests?", output)
+    if ran:
+        total = int(ran.group(1))
+        fail_m = re.findall(r"failures=(\d+)", output)
+        err_m = re.findall(r"errors=(\d+)", output)
+        failed = (int(fail_m[-1]) if fail_m else 0) + (int(err_m[-1]) if err_m else 0)
+        return max(total - failed, 0), failed
+    return None, None
+
+
+def _run_cmd(cmd: str, cwd: Path, timeout: int = _CMD_TIMEOUT_DEFAULT) -> dict:
+    """Execute a shell command and capture exit code + output tail.
+    The exit code is the source of truth — the AI never self-reports results."""
+    start = datetime.now(timezone.utc)
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+        exit_code = proc.returncode
+        output = proc.stdout or ""
+        if proc.stderr:
+            output += ("\n" if output else "") + proc.stderr
+    except subprocess.TimeoutExpired:
+        exit_code = -1
+        output = f"TIMEOUT: comando excedeu {timeout}s"
+    except Exception as exc:  # noqa: BLE001 — reportado como falha de gate
+        exit_code = -2
+        output = f"ERRO ao executar comando: {exc}"
+    duration = (datetime.now(timezone.utc) - start).total_seconds()
+    tests_passed, tests_failed = _parse_test_counts(output)
+    return {
+        "cmd": cmd,
+        "exit_code": exit_code,
+        "duration_s": round(duration, 1),
+        "tests_passed": tests_passed,
+        "tests_failed": tests_failed,
+        "output_tail": output[-3000:],
+    }
+
+
+def _project_root_for(bl_path: Path, args: argparse.Namespace) -> Path:
+    if getattr(args, "project_root", ""):
+        return Path(args.project_root)
+    nexus = _find_nexus_root()
+    return nexus.parent if nexus else bl_path.parent.parent.parent.parent
+
+
 def _normalize_backlog(data: dict) -> dict:
     data.setdefault("nexus_version", "3.0")
     data.setdefault("plan_ref", "")
@@ -71,6 +147,7 @@ def _normalize_backlog(data: dict) -> dict:
     data.setdefault("created_at", _utcnow())
     data.setdefault("updated_at", _utcnow())
     data.setdefault("status", "building")
+    data.setdefault("smoke_cmd", "")
     data.setdefault("stories", [])
     data.setdefault("log", [])
 
@@ -289,7 +366,66 @@ def _build_task_payload(task: dict) -> dict:
         "diretiva_de_teste": task.get("diretiva_de_teste", ""),
         "verify_cmd": task.get("verify_cmd", ""),
         "ears_refs": task.get("ears_refs", []),
+        "criterio_refs": task.get("criterio_refs", []),
     }
+
+
+def _guess_test_files(task: dict) -> list[str]:
+    return [
+        f
+        for f in task.get("files", [])
+        if "test" in Path(f).name.lower() or "tests" in Path(f).parts
+    ]
+
+
+def _is_integration_task(task: dict) -> bool:
+    tipo = (task.get("tipo") or "").lower()
+    return tipo.startswith("integra") or task.get("nivel", 0) >= 2
+
+
+def _build_procedure(task: dict, story: dict) -> list[str]:
+    """Step-by-step procedure the AI must follow for THIS task.
+    Delivered with every `next`/`context` so the instructions arrive at the
+    moment of use instead of relying on the AI remembering the SKILL.md."""
+    script = sys.argv[0]
+    tid = task.get("id", "TASK-XXX")
+    verify_cmd = task.get("verify_cmd", "") or "(sem verify_cmd — corrija a task)"
+    test_files = _guess_test_files(task)
+    tf = " ".join(test_files) if test_files else "<arquivos de teste>"
+
+    steps: list[str] = []
+    if _is_integration_task(task):
+        refs = task.get("criterio_refs", [])
+        refs_txt = (
+            ", ".join(str(r) for r in refs) if refs else "todos os criterios da historia"
+        )
+        steps.append(
+            f"Releia os criterios Gherkin cobertos por esta task ({refs_txt}) na secao CRITERIOS."
+        )
+        steps.append(
+            "Escreva teste(s) de aceitacao caixa-preta cobrindo cada criterio ANTES de integrar. "
+            "Mock APENAS recursos externos (APIs de terceiros, servicos fora do projeto)."
+        )
+        steps.append(
+            "Implemente a integracao real (fio UI->API->dados) ate os testes passarem."
+        )
+    else:
+        steps.append(
+            f"TDD — escreva o teste unitario PRIMEIRO e rode '{verify_cmd}': ele DEVE falhar (RED)."
+        )
+        steps.append(
+            "Implemente codigo 100% real (zero TODO/placeholder/mock interno) ate o teste passar (GREEN)."
+        )
+    steps.append(f"Rode localmente e confirme 0 falhas: {verify_cmd}")
+    steps.append(
+        f"Complete — o script EXECUTA o verify_cmd e audita (nao aceita auto-relato): "
+        f"python {script} complete {tid} --test-files {tf}"
+    )
+    steps.append(f"Commit atomico: python {script} commit {tid}")
+    steps.append(
+        f"Rode 'python {script} progress' e COLE o output completo na resposta do chat."
+    )
+    return steps
 
 
 def _build_ears_payload(data: dict, story: dict, task: dict | None) -> dict:
@@ -359,6 +495,7 @@ def _build_delivery_payload(
         ),
         "progress": _progress_snapshot(data),
         "quality_gate": _quality_gate_snapshot(data),
+        "procedure": _build_procedure(task, story) if task else [],
     }
     return payload
 
@@ -752,6 +889,7 @@ def cmd_add_task(bl_path: Path, args: argparse.Namespace) -> None:
         "files": args.files or [],
         "dependencies": args.dependencies or [],
         "ears_refs": args.ears_refs or [],
+        "criterio_refs": args.criterio_refs or [],
         "status": "pending",
         "started_at": None,
         "completed_at": None,
@@ -831,19 +969,19 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
         print(f"Task '{args.task_id}' ja esta completed.")
         return
 
-    if args.project_root:
-        project_root = Path(args.project_root)
-    else:
-        nexus = _find_nexus_root()
-        project_root = nexus.parent if nexus else bl_path.parent.parent.parent.parent
+    project_root = _project_root_for(bl_path, args)
     claimed_test_files = args.test_files or []
-    claimed_passed = args.test_passed
-    claimed_failed = args.test_failed
+    if args.test_passed or args.test_failed:
+        print(
+            "AVISO: --test-passed/--test-failed sao ignorados — o script executa o verify_cmd e mede o resultado.",
+            file=sys.stderr,
+        )
+    timeout = args.timeout or _CMD_TIMEOUT_DEFAULT
 
     audit = {}
     gate_failures: list[tuple[str, str]] = []
 
-    # ── GATE 1: All task.files exist on disk ──
+    # ── GATE FILES: All task.files exist on disk ──
     all_task_files = task.get("files", [])
     missing_files = [f for f in all_task_files if not (project_root / f).exists()]
     audit["files_exist"] = len(missing_files) == 0
@@ -852,15 +990,21 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
             ("FILES", f"arquivos nao encontrados: {', '.join(missing_files)}")
         )
 
-    # ── GATE 2: Anti-mock scan on implementation files only ──
+    # ── WARNING (nao bloqueia): anti-mock scan nos arquivos de implementacao ──
+    # A prova real de implementacao e a execucao do verify_cmd (gate VERIFY).
     test_file_set = set(claimed_test_files)
     impl_files = [f for f in all_task_files if f not in test_file_set]
-    mock_violations = _scan_for_mocks(impl_files, project_root)
-    audit["no_mocks"] = len(mock_violations) == 0
-    if mock_violations:
-        gate_failures.append(("MOCKS", "; ".join(mock_violations[:5])))
+    mock_warnings = _scan_for_mocks(impl_files, project_root)
+    audit["mock_warnings"] = len(mock_warnings)
+    if mock_warnings:
+        print(
+            f"AVISO [MOCKS]: {len(mock_warnings)} padrao(oes) de placeholder detectado(s) — verifique se sao legitimos:",
+            file=sys.stderr,
+        )
+        for v in mock_warnings[:5]:
+            print(f"   - {v}", file=sys.stderr)
 
-    # ── GATE 3: Claimed test files exist on disk ──
+    # ── GATE TESTS: Claimed test files exist on disk ──
     if claimed_test_files:
         missing_tests = [
             f for f in claimed_test_files if not (project_root / f).exists()
@@ -873,22 +1017,96 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
     else:
         audit["test_files_exist"] = None
 
-    # ── GATE 4: AI claims all tests passed ──
-    if claimed_test_files:
-        audit["tests_pass_check"] = claimed_failed == 0 and claimed_passed > 0
-        if claimed_failed > 0:
-            gate_failures.append(
-                ("TEST_RESULT", f"IA reportou {claimed_failed} teste(s) falhando")
-            )
-        if claimed_passed == 0:
+    # ── GATE VERIFY: o SCRIPT executa o verify_cmd (exit code = verdade) ──
+    verify_cmd = task.get("verify_cmd", "")
+    verify_result = None
+    if not verify_cmd:
+        audit["verify_passed"] = False
+        gate_failures.append(
+            ("VERIFY", "task sem verify_cmd — registre o test runner real da stack")
+        )
+    else:
+        verify_result = _run_cmd(verify_cmd, project_root, timeout)
+        verify_ok = verify_result["exit_code"] == 0 and not verify_result[
+            "tests_failed"
+        ]
+        audit["verify_passed"] = verify_ok
+        if not verify_ok:
+            detail = f"verify_cmd falhou (exit={verify_result['exit_code']}): {verify_cmd}"
+            gate_failures.append(("VERIFY", detail))
+            tail = verify_result["output_tail"][-1500:]
+            if tail:
+                print("--- OUTPUT DO VERIFY_CMD (final) ---", file=sys.stderr)
+                print(tail, file=sys.stderr)
+                print("--- FIM OUTPUT ---", file=sys.stderr)
+
+    # ── GATE REGRESSION: ao fechar uma story, re-executa os verify_cmds
+    #    de todas as tasks ja completadas (integracao cumulativa) ──
+    regression_results: list[dict] = []
+    basic_ok = not gate_failures
+    story_will_close = basic_ok and all(
+        t["status"] == "completed"
+        for t in story.get("tasks", [])
+        if t["id"] != task["id"]
+    )
+    audit["regression_passed"] = None
+    if story_will_close:
+        seen_cmds = {verify_cmd}
+        regression_cmds: list[str] = []
+        for _s, t in _all_tasks(data):
+            if t["status"] != "completed":
+                continue
+            cmd = t.get("verify_cmd", "")
+            if cmd and cmd not in seen_cmds:
+                seen_cmds.add(cmd)
+                regression_cmds.append(cmd)
+        audit["regression_passed"] = True
+        for cmd in regression_cmds:
+            result = _run_cmd(cmd, project_root, timeout)
+            regression_results.append(result)
+            if result["exit_code"] != 0 or result["tests_failed"]:
+                audit["regression_passed"] = False
+                gate_failures.append(
+                    (
+                        "REGRESSION",
+                        f"regressao quebrada ao fechar a story (exit={result['exit_code']}): {cmd}",
+                    )
+                )
+                tail = result["output_tail"][-1500:]
+                if tail:
+                    print("--- OUTPUT DA REGRESSAO (final) ---", file=sys.stderr)
+                    print(tail, file=sys.stderr)
+                    print("--- FIM OUTPUT ---", file=sys.stderr)
+                break
+
+    # ── GATE SMOKE: ao fechar o plano, executa o smoke_cmd (app funciona?) ──
+    smoke_result = None
+    smoke_cmd = data.get("smoke_cmd", "")
+    plan_will_close = (
+        not gate_failures
+        and all(
+            t["status"] == "completed"
+            for _s, t in _all_tasks(data)
+            if t["id"] != task["id"]
+        )
+    )
+    audit["smoke_passed"] = None
+    if plan_will_close and smoke_cmd:
+        smoke_result = _run_cmd(smoke_cmd, project_root, timeout)
+        smoke_ok = smoke_result["exit_code"] == 0
+        audit["smoke_passed"] = smoke_ok
+        if not smoke_ok:
             gate_failures.append(
                 (
-                    "TEST_RESULT",
-                    "IA reportou 0 testes passando (nenhum teste executado?)",
+                    "SMOKE",
+                    f"smoke falhou (exit={smoke_result['exit_code']}): {smoke_cmd} — a aplicacao nao esta funcional ponta a ponta",
                 )
             )
-    else:
-        audit["tests_pass_check"] = None
+            tail = smoke_result["output_tail"][-1500:]
+            if tail:
+                print("--- OUTPUT DO SMOKE (final) ---", file=sys.stderr)
+                print(tail, file=sys.stderr)
+                print("--- FIM OUTPUT ---", file=sys.stderr)
 
     # ── REJECT if any gate failed (all failures reported together) ──
     if gate_failures:
@@ -898,7 +1116,9 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
         task["last_error"] = all_details
         _append_log(data, args.task_id, "rejected", all_details)
 
-        has_test_failure = any(g == "TEST_RESULT" for g, _ in gate_failures)
+        has_test_failure = any(
+            g in ("VERIFY", "REGRESSION", "SMOKE") for g, _ in gate_failures
+        )
         if has_test_failure:
             _set_tests_status(data, "blocked", all_details)
 
@@ -919,27 +1139,28 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
             )
         sys.exit(1)
 
-    # ── ALL GATES PASSED → generate evidence ──
+    # ── ALL GATES PASSED → generate evidence (resultado MEDIDO, nao declarado) ──
     evidence = {
         "task_id": args.task_id,
         "timestamp": _utcnow(),
-        "claims": {
-            "test_files": claimed_test_files,
-            "test_passed": claimed_passed,
-            "test_failed": claimed_failed,
-        },
+        "claims": {"test_files": claimed_test_files},
+        "verify": verify_result,
+        "regression": regression_results,
+        "smoke": smoke_result,
         "audit": audit,
+        "mock_warnings": mock_warnings,
         "result": "ACCEPTED",
     }
     evidence_path = _save_evidence(bl_path, args.task_id, evidence)
 
+    measured_passed = (verify_result or {}).get("tests_passed") or 0
     task["status"] = "completed"
     task["completed_at"] = _utcnow()
     task["verification"] = {
         "evidence_file": str(evidence_path.relative_to(bl_path.parent)),
         "gates_passed": sum(1 for v in audit.values() if v is True),
-        "gates_total": sum(1 for v in audit.values() if v is not None),
-        "test_count": claimed_passed,
+        "gates_total": sum(1 for v in audit.values() if isinstance(v, bool)),
+        "test_count": measured_passed,
     }
     _append_log(data, args.task_id, "completed", f"evidence: {evidence_path.name}")
 
@@ -957,6 +1178,18 @@ def cmd_complete(bl_path: Path, args: argparse.Namespace) -> None:
     print(
         f"OK Task '{args.task_id}' completed ({gates['gates_passed']}/{gates['gates_total']} gates)"
     )
+    if verify_result:
+        vp = verify_result.get("tests_passed")
+        counts = f", {vp} teste(s) passando" if vp is not None else ""
+        print(
+            f"   Verify executado pelo script: exit=0{counts} ({verify_result['duration_s']}s)"
+        )
+    if regression_results:
+        print(
+            f"   Regressao da story: {len(regression_results)} verify_cmd(s) re-executado(s), 0 falhas"
+        )
+    if smoke_result:
+        print(f"   Smoke: exit=0 ({smoke_result['duration_s']}s)")
     print(f"   Evidencia: {evidence_path}")
     print(f"   Progresso: {pct}%")
     if data["status"] == "completed":
@@ -977,6 +1210,66 @@ def cmd_fail(bl_path: Path, args: argparse.Namespace) -> None:
     print(f"OK Falha registrada em '{args.task_id}' (tentativa {task['failures']})")
     if task["failures"] >= 3:
         print(f"   CIRCUIT BREAKER: {task['failures']} falhas consecutivas.")
+
+
+def cmd_set_smoke(bl_path: Path, args: argparse.Namespace) -> None:
+    data = _load(bl_path)
+    data["smoke_cmd"] = args.cmd
+    _save(bl_path, data)
+    print(f"OK smoke_cmd registrado: {args.cmd}")
+    print(
+        "   Sera executado automaticamente pelo 'complete' da ultima task do plano e pelo /review."
+    )
+
+
+def cmd_commit(bl_path: Path, args: argparse.Namespace) -> None:
+    """Atomic conventional commit for a completed task — the script runs git,
+    so the AI does not need to compose shell-specific command chains."""
+    data = _load(bl_path)
+    _story, task = _find_task(data, args.task_id)
+    if task is None:
+        print(f"ERRO: Task '{args.task_id}' nao encontrada.", file=sys.stderr)
+        sys.exit(1)
+    if task["status"] != "completed":
+        print(
+            f"ERRO: Task '{args.task_id}' ainda nao esta completed — rode 'complete' primeiro.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    project_root = _project_root_for(bl_path, args)
+    scope = (task.get("tipo") or "core").lower()
+    message = args.message or f"feat({scope}): {task.get('title', args.task_id)} [{args.task_id}]"
+
+    add = subprocess.run(
+        ["git", "add", "-A"],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if add.returncode != 0:
+        print(f"ERRO: git add falhou:\n{add.stderr or add.stdout}", file=sys.stderr)
+        sys.exit(1)
+
+    commit = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    output = (commit.stdout or "") + (commit.stderr or "")
+    if commit.returncode != 0:
+        if "nothing to commit" in output:
+            print("Nada para commitar (working tree limpo).")
+            return
+        print(f"ERRO: git commit falhou:\n{output}", file=sys.stderr)
+        sys.exit(1)
+
+    _append_log(data, args.task_id, "committed", message)
+    _save(bl_path, data)
+    print(f"OK commit: {message}")
 
 
 # ------------------------------------------------------------------
@@ -1127,6 +1420,11 @@ def _format_task_context(data: dict, story: dict, task: dict) -> str:
         for name, defn in entity_index.items():
             lines.append(f"  - {name}: {defn}")
         lines.append("")
+
+    lines.append("PROCEDIMENTO OBRIGATORIO (siga na ordem):")
+    for i, step in enumerate(_build_procedure(task, story), 1):
+        lines.append(f"  {i}. {step}")
+    lines.append("")
 
     quality_gate = _quality_gate_snapshot(data)
     lines.append(
@@ -1506,6 +1804,33 @@ def cmd_validate(bl_path: Path, _args: argparse.Namespace) -> None:
             if dep not in dep_ids:
                 errors.append(f"Task '{task['id']}' depende de '{dep}' que nao existe")
 
+    # Cobertura criterio<->task: todo criterio Gherkin precisa de uma task
+    # (tipicamente de Integracao) que declare cobri-lo via --criterio-refs.
+    for story in stories:
+        criterios = story.get("criterios", [])
+        if not criterios:
+            continue
+        covered: set[int] = set()
+        for task in story.get("tasks", []):
+            for ref in task.get("criterio_refs", []):
+                if ref < 1 or ref > len(criterios):
+                    errors.append(
+                        f"Task '{task['id']}' referencia criterio {ref} inexistente em '{story['id']}' (historia tem {len(criterios)})"
+                    )
+                else:
+                    covered.add(ref)
+        missing = [str(i) for i in range(1, len(criterios) + 1) if i not in covered]
+        if missing:
+            errors.append(
+                f"Historia '{story['id']}': criterio(s) {', '.join(missing)} sem task de cobertura — declare --criterio-refs na task de Integracao que os testa"
+            )
+
+    if not data.get("smoke_cmd"):
+        print(
+            "AVISO: smoke_cmd nao registrado. Se o projeto tem entrypoint executavel, registre com "
+            "'set-smoke --cmd \"...\"' — sera executado ao fechar o plano para provar que a aplicacao funciona ponta a ponta."
+        )
+
     if errors:
         print(f"FALHA: {len(errors)} problema(s):")
         for e in errors:
@@ -1574,6 +1899,20 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--ears-refs", nargs="+", default=[], help="IDs de EARS relacionados"
     )
+    s.add_argument(
+        "--criterio-refs",
+        nargs="+",
+        type=int,
+        default=[],
+        help="Indices (1-based) dos criterios Gherkin da historia cobertos por esta task",
+    )
+
+    # set-smoke
+    s = sub.add_parser(
+        "set-smoke",
+        help="Registrar comando de smoke (prova que a aplicacao funciona ponta a ponta)",
+    )
+    s.add_argument("--cmd", required=True, help="Comando de smoke (exit 0 = OK)")
 
     # start
     s = sub.add_parser("start", help="Marcar task como in_progress")
@@ -1581,22 +1920,51 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # complete
     s = sub.add_parser(
-        "complete", help="Validar claims da IA e marcar task como completed"
+        "complete",
+        help="Marcar task como completed — o SCRIPT executa o verify_cmd (exit code = gate)",
     )
     s.add_argument("task_id", help="ID da task")
     s.add_argument(
         "--test-files", nargs="+", default=[], help="Arquivos de teste criados pela IA"
     )
     s.add_argument(
-        "--test-passed", type=int, default=0, help="Numero de testes que passaram"
+        "--test-passed",
+        type=int,
+        default=0,
+        help="(DEPRECATED — ignorado; o script executa o verify_cmd)",
     )
     s.add_argument(
-        "--test-failed", type=int, default=0, help="Numero de testes que falharam"
+        "--test-failed",
+        type=int,
+        default=0,
+        help="(DEPRECATED — ignorado; o script executa o verify_cmd)",
+    )
+    s.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help=f"Timeout em segundos por comando executado (default: {_CMD_TIMEOUT_DEFAULT})",
     )
     s.add_argument(
         "--project-root",
         default="",
         help="Raiz do projeto (default: 3 niveis acima do backlog.json)",
+    )
+
+    # commit
+    s = sub.add_parser(
+        "commit", help="Micro-commit atomico de uma task completed (git add -A + commit)"
+    )
+    s.add_argument("task_id", help="ID da task (deve estar completed)")
+    s.add_argument(
+        "--message",
+        default="",
+        help="Mensagem do commit (default: feat(tipo): titulo [TASK-ID])",
+    )
+    s.add_argument(
+        "--project-root",
+        default="",
+        help="Raiz do projeto (default: auto-descoberta via .nexus/)",
     )
 
     # fail
@@ -1651,8 +2019,10 @@ _ACTIONS = {
     "add-story": cmd_add_story,
     "add-criterio": cmd_add_criterio,
     "add-task": cmd_add_task,
+    "set-smoke": cmd_set_smoke,
     "start": cmd_start,
     "complete": cmd_complete,
+    "commit": cmd_commit,
     "fail": cmd_fail,
     "next": cmd_next,
     "context": cmd_context,

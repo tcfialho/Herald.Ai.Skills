@@ -20,6 +20,7 @@ from .base import Caps, Invocation
 name = "claude_code"
 capabilities = Caps(usage_quality="exact", activation_observable=True,
                     events_observable=True, parallel_safe=True)
+default_judge_model = "sonnet"
 
 
 def normalize_events(events: list[dict]) -> list[dict]:

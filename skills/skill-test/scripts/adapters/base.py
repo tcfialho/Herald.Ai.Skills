@@ -97,6 +97,55 @@ def resolve_adapter(name: str | None, cfg: dict):
     )
 
 
+def resolve_judge(cfg: dict):
+    """Judge adapter + default model. config judge.adapter defaults to `auto`
+    (same host-detection chain as the SUT), so a cursor-only machine judges on
+    cursor. Returns (adapter_module, default_model, provenance)."""
+    judge_cfg = (cfg or {}).get("judge") or {}
+    adapter, provenance = resolve_adapter(judge_cfg.get("adapter", "auto"), cfg)
+    model = judge_cfg.get("model") or getattr(adapter, "default_judge_model", None)
+    if not model:
+        ladder = (((cfg or {}).get("adapters") or {}).get(adapter.name) or {}).get("ladder") or []
+        model = ladder[0] if ladder else "auto"
+    return adapter, model, provenance
+
+
+def extract_json(text: str) -> dict:
+    """Lenient JSON extraction for CLIs without schema enforcement: tolerates
+    prose and markdown fences around one JSON object."""
+    import json
+
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise RuntimeError(f"no JSON object in judge output: {text.strip()[:200]!r}")
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid JSON in judge output ({exc}): {text[start:start + 200]!r}")
+
+
+def judge_via_text(run_once, *, prompt: str, schema: dict, model: str) -> dict:
+    """Shared prompt-JSON judge for adapters without --json-schema: schema goes
+    in-band, the reply is parsed leniently, one retry on unparseable output.
+    `run_once(full_prompt) -> reply text` is the adapter-specific call."""
+    import json
+
+    wrapper = (
+        "Respond with ONLY one JSON object matching this JSON schema — no prose, "
+        "no markdown fences, no tool calls.\nSchema:\n" + json.dumps(schema) + "\n\n"
+    )
+    suffix = ""
+    last: Exception | None = None
+    for _ in range(2):
+        text = run_once(wrapper + prompt + suffix)
+        try:
+            return {"output": extract_json(text), "cost_usd": 0.0, "resolved_model": model}
+        except RuntimeError as exc:
+            last = exc
+            suffix = "\n\nYour previous reply was not a single valid JSON object. Return ONLY the JSON."
+    raise RuntimeError(f"judge returned no parseable JSON after retry: {last}")
+
+
 def sum_usage(invocations: list[Invocation]) -> dict:
     totals = {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_creation": 0}
     cost = 0.0

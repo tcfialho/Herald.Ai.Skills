@@ -45,11 +45,10 @@ def adapt(
     target_model: str, target_items: list[str] | None, max_iters: int,
     votes: int, patcher_model: str | None,
 ) -> dict:
-    from adapters.base import get_adapter
+    from adapters.base import resolve_judge
 
-    judge_cfg = cfg.get("judge") or {}
-    judge_adapter = get_adapter(judge_cfg.get("adapter", "claude_code"))
-    patcher = patcher_model or judge_cfg.get("model", "sonnet")
+    judge_adapter, default_model, _ = resolve_judge(cfg)
+    patcher = patcher_model or default_model
     ladder = (cfg["adapters"].get(adapter.name) or {}).get("ladder") or [target_model]
     gate_model = ladder[0] if ladder[0] != target_model else None
     scenarios_by_name = {s["name"]: s for s in scenarios}

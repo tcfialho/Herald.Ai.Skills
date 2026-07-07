@@ -157,6 +157,20 @@ def invoke(
     )
 
 
+def judge_invoke(*, prompt: str, model: str, schema: dict, cwd: Path, timeout_s: int = 600) -> dict:
+    """Prompt-JSON judge (no schema enforcement in agy; parsed leniently)."""
+    from .base import judge_via_text
+
+    def run_once(full_prompt: str) -> str:
+        inv = invoke(prompt=full_prompt, cwd=cwd, model=model, allowed_tools=[],
+                     timeout_s=timeout_s, budget_usd=0.0)
+        if not inv.ok:
+            raise RuntimeError(f"agy judge failed: {inv.error}")
+        return inv.final_text
+
+    return judge_via_text(run_once, prompt=prompt, schema=schema, model=model)
+
+
 def normalize_events(events: list[dict]) -> list[dict]:
     """agy has no structured stream: one assistant turn per invocation."""
     return [

@@ -359,6 +359,65 @@ def test_resolve_adapter_precedence():
         detect._ancestor_cmdlines = orig
 
 
+def test_verify_round_normalizes_decorated_item_ids():
+    from bench_lib.judging import _verify_round
+    items = [{"id": "B-01", "kind": "judge", "severity": "major"}]
+    turns = [{"idx": 0, "role": "assistant", "text": "the exact quoted words", "tool_calls": []}]
+    raw = [{"item": "B-01 (major)", "verdict": "fail",
+            "evidence": {"turn": 0, "quote": "the exact quoted words"}, "confidence": 90}]
+    kept = _verify_round(raw, items, turns)
+    assert kept["B-01"]["verdict"] == "fail"
+    # unknown ids still dropped
+    assert _verify_round([{"item": "Z-99", "verdict": "pass", "confidence": 1}], items, turns) == {}
+
+
+def test_extract_json_lenient():
+    from adapters.base import extract_json
+    assert extract_json('{"verdicts": []}') == {"verdicts": []}
+    assert extract_json('Sure! Here it is:\n```json\n{"a": 1}\n```\nHope it helps') == {"a": 1}
+    for bad in ("no json here", "{broken"):
+        try:
+            extract_json(bad)
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError:
+            pass
+
+
+def test_judge_via_text_retries_once_then_raises():
+    from adapters.base import judge_via_text
+    calls = []
+
+    def flaky(full_prompt):
+        calls.append(full_prompt)
+        return "not json" if len(calls) == 1 else '{"ok": true}'
+
+    r = judge_via_text(flaky, prompt="p", schema={"type": "object"}, model="auto")
+    assert r["output"] == {"ok": True} and len(calls) == 2
+    assert "not a single valid JSON" in calls[1]  # retry carries the correction
+
+    try:
+        judge_via_text(lambda _: "never json", prompt="p", schema={}, model="auto")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "no parseable JSON" in str(exc)
+
+
+def test_resolve_judge_defaults_per_adapter():
+    from adapters.base import resolve_judge
+    # pinned adapter, no model → adapter's default judge model
+    adapter, model, _ = resolve_judge({"judge": {"adapter": "cursor"}})
+    assert (adapter.name, model) == ("cursor", "auto")
+    adapter, model, _ = resolve_judge({"judge": {"adapter": "claude_code"}})
+    assert (adapter.name, model) == ("claude_code", "sonnet")
+    # explicit model always wins
+    adapter, model, _ = resolve_judge({"judge": {"adapter": "copilot", "model": "gpt-9"}})
+    assert (adapter.name, model) == ("copilot", "gpt-9")
+    # agy has no default → first ladder rung
+    adapter, model, _ = resolve_judge(
+        {"judge": {"adapter": "agy"}, "adapters": {"agy": {"ladder": ["Gemini X", "Gemini Y"]}}})
+    assert (adapter.name, model) == ("agy", "Gemini X")
+
+
 def test_check_error_isolated_from_compliance():
     items = [
         {"id": "E-01", "kind": "deterministic", "severity": "major",

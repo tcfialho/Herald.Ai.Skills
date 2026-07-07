@@ -10,9 +10,14 @@ version: 1
 
 # One judge per run, for ALL cells regardless of SUT adapter — mixing judges
 # across ladders would make cross-adapter comparison apples vs oranges.
+# adapter: auto = same host-detection chain as the SUT (a cursor-only machine
+# judges on cursor). claude_code judges with CLI-enforced JSON schema; the
+# other adapters use prompt-JSON with the same mechanical evidence checks.
+# For decision runs (promote/compare across time) PIN one judge here.
 judge:
-  adapter: claude_code
-  model: sonnet          # opus is mandatory for promote-gating runs (pass --judge-model opus)
+  adapter: auto
+  # model: sonnet        # unset = adapter default (claude_code: sonnet; cursor/copilot: auto).
+                         # On claude_code, opus is mandatory for promote-gating runs (--judge-model opus).
 
 adapters:
   claude_code:

@@ -45,11 +45,10 @@ def judge_run(
     *, cfg: dict, skill_dir: Path, run_id: str, contract: dict,
     scenarios_by_name: dict[str, dict], judge_model: str | None, votes: int,
 ) -> dict:
-    from adapters.base import get_adapter
+    from adapters.base import resolve_judge
 
-    judge_cfg = cfg.get("judge") or {}
-    adapter = get_adapter(judge_cfg.get("adapter", "claude_code"))
-    model = judge_model or judge_cfg.get("model", "sonnet")
+    adapter, default_model, _ = resolve_judge(cfg)
+    model = judge_model or default_model
     rdir = run_dir(skill_dir, run_id)
     progress = load_progress(rdir)
     if not progress:
@@ -101,7 +100,7 @@ def judge_run(
         safe_rmtree(neutral_cwd)
 
     payload = {
-        "run_id": run_id, "judge_model": model, "votes": votes,
+        "run_id": run_id, "judge_adapter": adapter.name, "judge_model": model, "votes": votes,
         "judged_at": now_iso(), "cost_usd": round(total_cost, 4), "cells": cells_out,
     }
     dump_json(rdir / "judge.json", payload)
@@ -131,13 +130,27 @@ def _judge_with_votes(adapter, *, prompt, model, votes, items, turns, cwd):
     return merged, cost
 
 
+import re as _re
+
+_ITEM_ID_RX = _re.compile(r"[A-Za-z]+-\d+")
+
+
+def _normalize_item_id(raw, known: set[str]) -> str | None:
+    """Judges without schema enforcement decorate ids ("B-01 (major)") —
+    recover the bare id when it unambiguously maps to a known item."""
+    if raw in known:
+        return raw
+    m = _ITEM_ID_RX.search(str(raw or ""))
+    return m.group(0) if m and m.group(0) in known else None
+
+
 def _verify_round(raw_verdicts: list[dict], items: list[dict], turns: list[dict]) -> dict:
     """Keep only verdicts whose evidence survives mechanical verification."""
     by_id = {}
     known = {it["id"] for it in items}
     for v in raw_verdicts:
-        iid = v.get("item")
-        if iid not in known or iid in by_id:
+        iid = _normalize_item_id(v.get("item"), known)
+        if iid is None or iid in by_id:
             continue
         if v["verdict"] == "fail":
             ev = v.get("evidence") or {}
@@ -209,4 +222,5 @@ def _build_prompt(items: list[dict], turns: list[dict], final_state: dict, det: 
         lines.append(f"- {r['id']}: {r['status']}")
     lines.append("")
     lines.append('Return JSON: {"verdicts": [{"item", "verdict", "evidence": {"turn", "quote"}, "confidence"}]}')
+    lines.append('"item" must be EXACTLY the item id (e.g. "B-01") — no severity, no extra text.')
     return "\n".join(lines)

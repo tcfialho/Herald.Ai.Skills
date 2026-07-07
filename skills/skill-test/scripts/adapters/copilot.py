@@ -42,6 +42,7 @@ from .base import Caps, Invocation
 name = "copilot"
 capabilities = Caps(usage_quality="estimated", activation_observable=True,
                     events_observable=True, parallel_safe=True)
+default_judge_model = "auto"
 
 _QUOTA_RX = re.compile(
     r"(usage limit|rate limit|quota|credit limit|out of .{0,20}(credits|premium requests)|no remaining premium)",
@@ -201,6 +202,38 @@ def invoke(
         inv.error = f"copilot exit {exit_code}: {err_text}"
         inv.error_kind = "quota" if _QUOTA_RX.search(err_text + " " + final_text) else "infra"
     return inv
+
+
+def judge_invoke(*, prompt: str, model: str, schema: dict, cwd: Path, timeout_s: int = 600) -> dict:
+    """Prompt-JSON judge: copilot has no --json-schema, so the schema goes
+    in-band (parsed leniently, one retry). -s + zero tools = text-only reply."""
+    from .base import judge_via_text
+
+    def run_once(full_prompt: str) -> str:
+        cmd = [
+            _copilot_bin(), "-p", full_prompt,
+            "--model", model,
+            "-s",
+            "--available-tools=",
+            "--no-color",
+            "--disable-builtin-mcps",
+            "--no-ask-user",
+            "--no-auto-update",
+            "--no-remote-export",
+        ]
+        proc = subprocess.run(
+            cmd, cwd=cwd, env=_child_env(), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout_s,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"copilot judge failed (exit {proc.returncode}): "
+                f"{(proc.stderr.strip() or proc.stdout.strip())[-300:]}"
+            )
+        return proc.stdout.strip()
+
+    return judge_via_text(run_once, prompt=prompt, schema=schema, model=model)
 
 
 def normalize_events(events: list[dict]) -> list[dict]:

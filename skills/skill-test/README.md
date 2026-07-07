@@ -15,7 +15,11 @@ versionado, e diz exatamente o que quebrou, onde, e em qual modelo — com evid�
 - **Vai commitar uma skill nova ou alterada?** Rode a suíte antes — pega regressão de banner,
   menu, fluxo, antes de chegar no usuário final.
 - **"Essa skill funciona no modelo mais fraco que uso?"** Descobre o piso: até onde na escada de
-  modelos (opus → sonnet → haiku, ou Gemini Pro → Flash) a skill continua confiável.
+  modelos (opus → sonnet → haiku, ou Gemini Pro → Flash) a skill continua confiável. (Requer um
+  plano com mais de um modelo disponível — veja a seção sobre CLIs.)
+- **"Minha skill funciona no Cursor? E no Copilot?"** Roda a mesma suíte em outro CLI de agente
+  (`--adapter cursor`, `copilot`, `agy`) — a skill que você escreveu para um pode ser validada nos
+  outros.
 - **"Minha description está ativando a skill direito?"** Mede a taxa de ativação por linguagem
   natural — sem isso, "funciona" e "o modelo nem carrega a skill" ficam indistinguíveis.
 - **"Minha otimização de tokens no SKILL.md valeu a pena?"** Compara consumo de tokens entre duas
@@ -41,6 +45,44 @@ No chat, basta pedir em linguagem natural — a skill entende o pedido e escolhe
 
 Toda resposta chega como um **menu numerado explicado em português simples** — nunca uma pergunta
 seca sem contexto. Você sempre entende o que cada opção faz antes de escolher.
+
+## Em qual CLI isso roda? (Claude, Cursor, Copilot, Gemini)
+
+A skill-test testa skills em **quatro CLIs de agente**, e qualquer **um deles sozinho** é
+suficiente para tudo — inclusive o juiz:
+
+| CLI (executável) | Adapter | Observações |
+|---|---|---|
+| Claude Code (`claude`) | `claude_code` | Referência: telemetria exata (tokens + custo USD) e juiz com JSON schema imposto pelo CLI |
+| Cursor (`agent`) | `cursor` | Tokens exatos, sem custo em USD; plano free só aceita o modelo `auto` |
+| GitHub Copilot (`copilot`) | `copilot` | Tokens de entrada estimados; custo medido em premium requests; planos atuais só aceitam `auto` |
+| Antigravity/Gemini (`agy`) | `agy` | Sem stream de eventos: ativação e checks de evento ficam excluídos (nunca contados como pass) |
+
+**Você não configura nada disso.** O harness detecta sozinho de qual CLI está sendo chamado
+(cada CLI marca os processos que cria) e usa esse mesmo CLI para executar e julgar. A ordem de
+decisão, da mais explícita para a mais automática:
+
+1. `--adapter <nome>` passado no comando — sempre vence;
+2. `default_adapter:` no `config.yaml` — para quem quer fixar;
+3. detecção do host (de onde você está conversando);
+4. se nada disso resolver e só houver **um** CLI instalado, usa ele.
+
+Se houver ambiguidade real (sessões aninhadas, vários CLIs e nenhum sinal), a skill **pergunta em
+vez de chutar**.
+
+**O juiz segue a mesma regra** (`judge.adapter: auto` no config): máquina só com Cursor executa
+*e* julga no Cursor. Um detalhe para usos avançados: juízes diferentes têm rigores diferentes, como
+professores diferentes corrigindo provas. Para o dia a dia tanto faz; mas se você for **comparar
+notas entre execuções de dias diferentes** (`compare`, promover baseline), garanta que foi o mesmo
+juiz nas duas — ou rode sempre do mesmo CLI (aí o `auto` já resolve sempre igual), ou fixe um no
+config (`judge: {adapter: cursor}`). Cada resultado grava qual juiz o corrigiu (`judge_adapter` no
+`judge.json`), então dá para conferir depois.
+
+**Limitação honesta dos planos free:** Cursor e Copilot free só expõem o modelo `auto`, então a
+"escada de modelos" deles tem um degrau só — o teste funciona por completo, mas as análises que
+comparam modelos (`floor`/piso, matriz multi-modelo) só fazem sentido com um plano que libere
+modelos nomeados (o Copilot informa qual modelo o `auto` escolheu em cada célula; esse dado é
+gravado no resultado).
 
 ## As telas e os menus — o mapa completo
 
@@ -167,6 +209,11 @@ escolha explícita sua, sempre com o tamanho da operação (quantas sessões) mo
 começar. Se a sessão de teste esbarrar no limite do seu plano, a skill para sozinha, avisa quando o
 limite reseta, e retoma de onde parou sem repetir o que já passou.
 
+No Cursor e no Copilot o CLI não expõe custo em dinheiro — o controle é pelo número de células,
+tempo-limite e máximo de turnos (o Copilot ainda reporta as *premium requests* consumidas por
+célula). No Claude a telemetria em USD existe, mas para quem é assinante ela é referência, não
+dinheiro saindo — o que conta é a cota do plano.
+
 ## Gerando o release (pasta pronta para instalar)
 
 Esta pasta (`skills/skill-test/`) é o **código-fonte** da skill: além do necessário para rodar,
@@ -197,11 +244,17 @@ essa lista).
 
 ```bash
 cd skills/skill-test && ./release.sh
-mkdir -p ~/.claude/skills
-cp -r release/skill-test ~/.claude/skills/
 ```
 
-Pré-requisitos: Python 3.10+, PyYAML (`pip install pyyaml`), e o CLI do modelo que você quer testar
-(`claude`; opcionalmente `agy` para modelos Gemini, `agent` para o Cursor e `copilot` para o
-GitHub Copilot — nos planos free/atuais, Cursor e Copilot só aceitam `--model auto`). Depois de instalar, abra
-`/skill-test` e peça "verifica o ambiente" a qualquer momento para conferir se está tudo certo.
+Depois copie `release/skill-test/` para a pasta de skills do CLI de onde você vai **conversar**:
+
+| Você conversa pelo | Instalar em (global) | Ou por projeto |
+|---|---|---|
+| Claude Code | `~/.claude/skills/` | `<projeto>/.claude/skills/` |
+| Cursor (`agent`) | `~/.cursor/skills/` | `<projeto>/.cursor/skills/` |
+| GitHub Copilot CLI | `~/.copilot/skills/` | `<projeto>/.claude/skills/` (o Copilot lê esse layout) |
+
+Pré-requisitos: Python 3.10+, PyYAML (`pip install pyyaml`) e **pelo menos um** CLI de agente
+instalado e logado (`claude`, `agent`, `copilot` ou `agy`) — não precisa ser o Claude; um ambiente
+só com o Cursor roda tudo, inclusive o juiz. Depois de instalar, abra `/skill-test` e peça
+"verifica o ambiente": o `doctor` mostra o host detectado, quais CLIs existem e o que falta.

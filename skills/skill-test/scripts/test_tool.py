@@ -190,7 +190,7 @@ def cmd_doctor(args, cfg):
     optional_clis = {"claude", "agy", "agent", "copilot"}
     for cli, args_v, needed_for in (
         ("git", ["--version"], "fixtures and --skill-ref"),
-        ("claude", ["--version"], "the claude_code adapter AND the judge (judge/compare/mutate/adapt); deterministic runs on other adapters work without it"),
+        ("claude", ["--version"], "the claude_code adapter; also the only judge with CLI-enforced JSON schema (other adapters judge via prompt-JSON)"),
         ("agy", ["--version"], "the agy adapter (only if benching on Gemini)"),
         ("agent", ["--version"], "the cursor adapter (only if benching on Cursor)"),
         ("copilot", ["--version"], "the copilot adapter (only if benching on Copilot)"),

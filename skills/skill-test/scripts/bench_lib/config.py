@@ -36,7 +36,7 @@ def load_bench_config() -> dict:
     defaults = dict(DEFAULTS)
     defaults.update(cfg.get("defaults") or {})
     cfg["defaults"] = defaults
-    cfg.setdefault("judge", {"adapter": "claude_code", "model": "sonnet"})
+    cfg.setdefault("judge", {"adapter": "auto"})
     cfg.setdefault("adapters", {"claude_code": {"ladder": ["opus", "sonnet", "haiku"]}})
     return cfg
 

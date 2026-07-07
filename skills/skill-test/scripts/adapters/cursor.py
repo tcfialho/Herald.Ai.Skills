@@ -36,6 +36,7 @@ from .base import Caps, Invocation
 name = "cursor"
 capabilities = Caps(usage_quality="exact", activation_observable=True,
                     events_observable=True, parallel_safe=True)
+default_judge_model = "auto"
 
 _QUOTA_RX = re.compile(
     r"(usage limit|rate limit|quota|free plans can only use|upgrade plans|out of .{0,20}credits)",
@@ -182,6 +183,43 @@ def invoke(
         inv.error = f"{result.get('subtype', 'error')}: {text}"
         inv.error_kind = "quota" if _QUOTA_RX.search(text) else "infra"
     return inv
+
+
+def judge_invoke(*, prompt: str, model: str, schema: dict, cwd: Path, timeout_s: int = 600) -> dict:
+    """Prompt-JSON judge: cursor has no --json-schema, so the schema goes
+    in-band (parsed leniently, one retry). --mode ask = read-only, no edits."""
+    from .base import judge_via_text
+
+    def run_once(full_prompt: str) -> str:
+        cmd = [
+            *_agent_argv(), "-p",
+            "--mode", "ask",
+            "--output-format", "json",
+            "--model", model,
+            "--trust",
+            full_prompt,
+        ]
+        proc = subprocess.run(
+            cmd, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout_s,
+        )
+        result = None
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") == "result":
+                result = ev
+        if result is None or result.get("is_error"):
+            detail = (result or {}).get("result") or proc.stderr.strip()[-300:]
+            raise RuntimeError(f"cursor judge failed (exit {proc.returncode}): {detail}")
+        return result.get("result") or ""
+
+    return judge_via_text(run_once, prompt=prompt, schema=schema, model=model)
 
 
 def normalize_events(events: list[dict]) -> list[dict]:

@@ -41,11 +41,10 @@ def compare_runs(
     *, cfg: dict, skill_dir: Path, run_a: str, run_b: str, contract: dict,
     scenarios_by_name: dict[str, dict], judge_model: str | None,
 ) -> dict:
-    from adapters.base import get_adapter
+    from adapters.base import resolve_judge
 
-    judge_cfg = cfg.get("judge") or {}
-    adapter = get_adapter(judge_cfg.get("adapter", "claude_code"))
-    model = judge_model or judge_cfg.get("model", "sonnet")
+    adapter, default_model, _ = resolve_judge(cfg)
+    model = judge_model or default_model
 
     rdir_a, rdir_b = run_dir(skill_dir, run_a), run_dir(skill_dir, run_b)
     prog_a, prog_b = load_progress(rdir_a), load_progress(rdir_b)

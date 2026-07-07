@@ -25,6 +25,18 @@ Every step below ends with **one contextual numbered menu** — never a dead end
 - **Load on the label**: options that spawn model sessions say how many — `Full matrix (6 cells)`. Each cell is a full agent session charged against the user's plan quota (or API credits when on API billing) — never label with dollars for subscription users; USD figures from the CLI are reference telemetry, not money the user is spending. Floor and full matrices are never the default choice.
 - **Navigation last**: the final option is always the way back (Dashboard / Skill panel / Done).
 
+## Direct requests (bypass the menu flow)
+
+These are answered immediately with the named command, regardless of what step you'd otherwise be
+in — no need to navigate the dashboard first:
+
+| User asks | Command |
+|---|---|
+| "por que não roda / ambiente quebrado?" | `doctor` — render the checks table; explain the first failing one |
+| "a versão nova é melhor que a antiga?" (2 judged runs exist) | `compare --run-id <newer> --baseline <older>` |
+| "meu teste pega defeito de verdade?" | `mutate` (needs `tests/mutations.yaml`; if missing, explain it's a list of `{id, edits, expect_detected_by}` and offer to help author one — see `references/authoring.md`) |
+| "conserta esse defeito sozinho" (a specific failing item is known) | `adapt --target-items <ids> --model <model>` — see § Auto-fix below |
+
 ## Step 1 — Welcome menu (dashboard)
 
 Trigger: bare invocation (`/skill-test`), "overview", "status das skills", or no skill named.
@@ -51,9 +63,11 @@ Nada é executado ao selecionar — você verá o painel dela com as ações pos
 
 _Ou:_ **E. Entender como funciona** — explica o que é a suíte `tests/`, selo, células,
 contrato e juiz, sem executar nada.
+**A. Verificar ambiente** — confere Python, CLIs e dependências e aponta o que falta,
+sem executar nenhum teste.
 ```
 
-The home does ONLY selection: list ALL skills (with and without tests) as numbered rows — creating tests, running, everything else happens inside the selected skill's panel (Step 2). The table rows are placeholders — always render the REAL skills found by `overview`. Replies: row number → Step 2 · `E` → glossary (tests/ = the skill's versioned test suite: contract.yaml defines what "working" means, scenarios are simulated user journeys, fixtures are the disposable world each cell runs in; plus seal, cell, judge, ladder — 1-2 lines each), then re-render this menu.
+The home does ONLY selection: list ALL skills (with and without tests) as numbered rows — creating tests, running, everything else happens inside the selected skill's panel (Step 2). The table rows are placeholders — always render the REAL skills found by `overview`. Replies: row number → Step 2 · `E` → glossary (tests/ = the skill's versioned test suite: contract.yaml defines what "working" means, scenarios are simulated user journeys, fixtures are the disposable world each cell runs in; plus seal, cell, judge, ladder — 1-2 lines each), then re-render this menu · `A` → `doctor`, render the checks table, explain the first failing item, then re-render this menu.
 
 ## Step 2 — Skill panel
 
@@ -63,15 +77,20 @@ Trigger: a skill was named ("testa a skill X", "quanto custa a skill X?") or pic
 
 **Skill WITH tests/** — run `seal --skill <name>` (+ reuse `overview` data) and render a short panel: seal state, last run (id · pass/cells · judged?), baseline, scenario list, ladder of the chosen adapter. Below it, the didactic menu — each option rendered in chat with its explanation translated to the conversation language, e.g. `1. **Smoke (2 células)** — teste rápido: melhor modelo, todos os cenários, 1 repetição. Recomendado: o selo está stale.` **Options (conditional):**
 
+This menu is the CATALOG of what the skill can do for this skill — a first-time user discovers every capability here, without having to know what to ask for. Never hide a capability behind free-text-only phrasing; if it applies to this skill, it is a numbered option:
+
 1. **Smoke run (S cells)** — top ladder model × all scenarios × 1 rep. Recommended (label it) when the seal is stale.
 2. **Full matrix (S×M cells)** — whole ladder × all scenarios (`--fail-fast`).
 3. **Report of last run** — only if a run exists; if it lacks judge.json, run `judge` first, then `report`.
 4. **Floor (up to S×M cells)** — descend the ladder to the breaking rung (`floor`).
 5. **Profile token cost** — `profile`; offer `--vs-ref <ref>` A/B when the skill sits in a git repo.
-6. **Switch adapter/ladder** — only if config.yaml has >1 adapter; re-render this panel for it.
-7. **Back to home**
+6. **Activation check (K cells)** — "does a natural request load this skill, or does the model ignore it?" — only if at least one `invocation: auto` scenario exists; `activation-probe --repeat 3` on it, render the rate (`2/3 activated`).
+7. **Compare two runs** — blind A/B verdict "did it get better or worse?" — only if ≥2 judged runs exist; `compare --run-id <newer> --baseline <older>`.
+8. **Calibrate the suite (mutate)** — "does this suite actually catch defects, or does it always pass?" — plants known regressions and measures detection. Needs `tests/mutations.yaml`; if absent, offer to author it with the user (see `references/authoring.md`) instead of hiding the option.
+9. **Switch adapter/ladder** — only if config.yaml has >1 adapter; re-render this panel for it.
+10. **Back to home**
 
-Options 1/2 → run (background if >2 cells) → `judge` → Step 3. Option 4 → confirm load, run `floor` → render zones (`sonnet ✅ native · haiku ❌ floor (B-04)`) → this menu again. Option 5 → run → render totals (exact) + split (estimated, say so) → this menu again.
+Options 1/2 → run (background if >2 cells) → `judge` → Step 3. Option 4 → confirm load, run `floor` → render zones (`sonnet ✅ native · haiku ❌ floor (B-04)`) → this menu again. Option 5 → run → render totals (exact) + split (estimated, say so) → this menu again. Options 6/7/8 → run → render the result → this menu again.
 
 ## Step 3 — Run report
 
@@ -108,9 +127,19 @@ Cell score = `contract_pct` when judged, else `compliance_pct`; ✅ pass · ⚠�
 
 For each picked row run `report --run-id <id> --cell <scenario>,<model>,<rep>` and render, starting with the `# 🧪 skill-test` banner: cell meta (status, cost, turns), failed items with evidence quotes, the relevant transcript excerpt (quote only what the evidence cites), probe outputs that failed. **Menu:**
 
-1. **Next failure** — only if more rows remain in the pick
-2. **Back to run report**
-3. **Back to skill panel**
+1. **Try auto-fix this failure** — only if the failure is a `deterministic` or `judge` contract item (not `desync`/`infra_error`/`over_budget`, those aren't fixable by editing the skill) → § Auto-fix
+2. **Next failure** — only if more rows remain in the pick
+3. **Back to run report**
+4. **Back to skill panel**
+
+## Auto-fix (`adapt`)
+
+Run `adapt --skill <name> --model <model that failed> --target-items <ids> --scenarios <cheapest scenarios that cover the items>`. It iterates patch→re-run on a disposable COPY of the skill (never the real file) and gates every accepted patch against the top of the ladder so a fix for the weak model can't regress the strong one. Render the result:
+
+- **Converged** — show the rationale of the winning patch and the token cost (`prompt_tax`), then the diff (`tests/baselines/adapt-N/final.diff`). Ask for explicit approval before applying it to the real `SKILL.md`. On approval: apply the diff, then run a smoke to refresh the seal.
+- **Did not converge** — say so plainly with the last iteration's evidence; do not keep iterating past `max_iters` without the user explicitly asking for another round (each iteration is a full run + gate, real cost).
+
+Never present `adapt` as fully automatic — it proposes, it does not commit.
 
 ## Cell statuses & exit codes
 

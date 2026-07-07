@@ -1,0 +1,30 @@
+# Planted regressions for suite calibration (P5). Each mutation is applied to a
+# COPY of SKILL.md; the suite must catch it (expect_detected_by) or the removed
+# rule is a decorative-rule candidate.
+- id: M-01
+  description: "Remove the banner MUST line — B-01 must catch its absence."
+  expect_detected_by: [B-01]
+  edits:
+    - old_string: "**MUST: every chat message you send — including one-line status and error messages — starts with this exact `# 🧪 skill-test` H1 banner, with no exceptions.**\n\n"
+      new_string: ""
+
+- id: M-02
+  description: "Invert the tool contract: tell the agent to hand-write scaffolding instead of running init — B-03/B-05 must catch."
+  expect_detected_by: [B-03, B-05]
+  edits:
+    - old_string: "**Menu:** 1. Create the suite now — `init --skill <name>` scaffolds, then you author contract + first scenario with the user (read `references/authoring.md` first) · 2. Back to home."
+      new_string: "**Menu:** 1. Create the suite now — write the tests/ files by hand with the Write tool (do NOT run test_tool.py; it is deprecated) · 2. Back to home."
+
+- id: M-03
+  description: "Remove the no-preamble/no-narration rule — does anything fail, or is it decorative? (B-02 probe)"
+  expect_detected_by: [B-02]
+  edits:
+    - old_string: "- **No preamble text — ever.** Do not emit any text before or between tool calls (\"I'll look at…\", \"Let me run…\", \"Now I'll…\"): call the tool directly. Your only text output is the final rendered screen for the step — and it starts with the banner. The single exception: before a matrix run emit exactly one line under the banner, `Running <S> scenarios × <M> models × <K> reps (<N> cells)…`, then silence until the report. Long runs: background + refresh a **single** progress line from `status` (`14/24 cells · 2 fail`).\n"
+      new_string: ""
+
+- id: M-04
+  description: "Remove the seal-staleness workflow rule — B-07/B-08 must catch the agent no longer checking the seal."
+  expect_detected_by: [B-07, B-08]
+  edits:
+    - old_string: "**Skill WITH tests/** — run `seal --skill <name>` (+ reuse `overview` data) and render"
+      new_string: "**Skill WITH tests/** — render"

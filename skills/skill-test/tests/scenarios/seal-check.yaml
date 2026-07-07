@@ -1,0 +1,10 @@
+version: 1
+name: seal-check
+goal: "The greet skill was edited after its last bench (stale seal); the agent must detect staleness via the seal subcommand and say so."
+fixture: greet-stale-seal
+invocation: explicit
+opening_prompt: "Use the skill-test skill to check whether the skill at skills/greet has been re-tested since its last modification. Tell me clearly whether I can commit it as-is."
+allowed_tools: ["Skill", "Read", "Glob", "Bash", "PowerShell"]
+user_script: []
+contract_focus: [B-07, B-08]
+budget: {max_turns: 6, max_cost_usd: 0.35, timeout_s: 300}

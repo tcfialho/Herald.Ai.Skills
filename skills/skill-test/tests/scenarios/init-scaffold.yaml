@@ -1,0 +1,12 @@
+version: 1
+name: init-scaffold
+goal: "User just wrote a new skill and wants it set up for bench validation; the agent must activate skill-test unprompted and scaffold via the tool."
+fixture: greet-workspace
+invocation: auto
+opening_prompt: "I just created a new agent skill at skills/greet in this workspace. Set up its test scaffolding so it can be validated before I commit it. Just the scaffolding for now - do not author the contract or scenarios yet."
+# Windows nested sessions surface a PowerShell tool besides Bash; wholesale
+# shell allowlist until per-command pattern semantics are verified (fase 1b).
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Bash", "PowerShell"]
+user_script: []
+contract_focus: [B-04, B-05, B-06]
+budget: {max_turns: 6, max_cost_usd: 0.35, timeout_s: 300}

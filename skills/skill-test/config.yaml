@@ -1,0 +1,25 @@
+# skill-test configuration. Ladder order (strong → weak) is a HUMAN decision —
+# there is no canonical cross-vendor ordering. `test_tool.py models` lists what
+# a CLI exposes; you decide where it sits.
+version: 1
+
+# One judge per run, for ALL cells regardless of SUT adapter — mixing judges
+# across ladders would make cross-adapter comparison apples vs oranges.
+judge:
+  adapter: claude_code
+  model: sonnet          # opus is mandatory for promote-gating runs (pass --judge-model opus)
+
+adapters:
+  claude_code:
+    ladder: [opus, sonnet, haiku]
+  agy:                   # display names verbatim from `agy models`
+    ladder: ["Gemini 3.1 Pro (High)", "Gemini 3.5 Flash (Medium)", "GPT-OSS 120B (Medium)"]
+
+defaults:
+  floor_threshold: {compliance_critical: 100, contract: 90}
+  adaptation_max_iters: 3
+  repeat: 1
+  run_budget_usd: 5.00   # kill-switch for a whole run
+  cell_budget_usd: 0.60
+  max_turns: 20          # CLI invocations per cell (opening + resumes)
+  timeout_s: 600

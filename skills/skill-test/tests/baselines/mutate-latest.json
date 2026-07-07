@@ -1,0 +1,61 @@
+{
+  "skill": "skill-test",
+  "model": "sonnet",
+  "votes": 1,
+  "ts": "2026-07-06T12:55:07Z",
+  "mutations_run": 4,
+  "detected": 4,
+  "detection_rate": 1.0,
+  "decorative_candidates": [],
+  "results": [
+    {
+      "id": "M-01",
+      "description": "Remove the banner MUST line — B-01 must catch its absence.",
+      "run_id": "run-22",
+      "status": "detected",
+      "failing_items": [
+        "B-01"
+      ],
+      "expected_hit": true,
+      "decorative_rule_candidate": false
+    },
+    {
+      "id": "M-02",
+      "description": "Invert the tool contract: tell the agent to hand-write scaffolding instead of running init — B-03/B-05 must catch.",
+      "run_id": "run-23",
+      "status": "detected",
+      "failing_items": [
+        "B-01",
+        "B-03",
+        "B-04",
+        "B-05"
+      ],
+      "expected_hit": true,
+      "decorative_rule_candidate": false
+    },
+    {
+      "id": "M-03",
+      "description": "Remove the no-preamble/no-narration rule — does anything fail, or is it decorative? (B-02 probe)",
+      "run_id": "run-24",
+      "status": "detected",
+      "failing_items": [
+        "B-01",
+        "B-02"
+      ],
+      "expected_hit": true,
+      "decorative_rule_candidate": false
+    },
+    {
+      "id": "M-04",
+      "description": "Remove the seal-staleness workflow rule — B-07/B-08 must catch the agent no longer checking the seal.",
+      "run_id": "run-25",
+      "status": "detected",
+      "failing_items": [
+        "B-01"
+      ],
+      "expected_hit": false,
+      "decorative_rule_candidate": false
+    }
+  ],
+  "note": "target ≥0.9 on critical mutations before trusting the suite (P5); decorative candidates are token-cut / rewrite candidates"
+}

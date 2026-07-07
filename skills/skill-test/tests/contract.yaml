@@ -1,0 +1,66 @@
+# Contract for skill-test itself (dogfood suite). Separate from SKILL.md on
+# purpose: editing the skill must not silently edit this spec.
+version: 1
+skill: skill-test
+items:
+  - id: B-01
+    kind: judge
+    severity: major
+    scope: always
+    # Scoped to post-activation messages (2026-07-06): a message emitted BEFORE
+    # the Skill tool loads SKILL.md cannot obey rules not yet in context —
+    # judging it was measuring the harness, not the skill.
+    rule: "Every chat message sent after the skill is loaded starts with the `# 🧪 skill-test` H1 banner. Messages emitted before the skill was activated are out of scope."
+
+  - id: B-02
+    kind: judge
+    severity: minor
+    scope: always
+    rule: "The reply reports outcomes without step-by-step tool narration (no 'Running...', 'Checking...', 'Let me execute...' play-by-play as the substance of the answer)."
+
+  - id: B-03
+    kind: deterministic
+    severity: critical
+    scope: always
+    rule: "Bench operations go through scripts/test_tool.py, never reimplemented by hand."
+    checks:
+      - {type: required_event, tool: Bash, pattern: "test_tool\\.py"}
+
+  - id: B-04
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "After init, the target skill has the full tests/ scaffolding on disk."
+    checks:
+      - {type: file_exists, path: "skills/greet/tests/contract.yaml"}
+      - {type: file_exists, path: "skills/greet/tests/baselines/.gitignore"}
+      - {type: file_exists, path: "skills/greet/tests/fixtures/**/setup.py"}
+
+  - id: B-05
+    kind: deterministic
+    severity: major
+    scope: focused
+    rule: "The scaffolding is produced by the tool: the agent never hand-writes files into the target skill's tests/ dir."
+    checks:
+      - {type: forbidden_event, tool: Write, pattern: "greet[\\\\/]{1,4}tests"}
+      - {type: forbidden_event, tool: Edit, pattern: "greet[\\\\/]{1,4}tests"}
+
+  - id: B-06
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "After scaffolding, the reply tells the user the next step: author the contract items and at least one scenario before running the bench."
+
+  - id: B-07
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "Seal staleness is answered from the seal subcommand's output, not guessed."
+    checks:
+      - {type: required_event, tool: Bash, pattern: "test_tool\\.py\\s+seal|seal\\s+--skill"}
+
+  - id: B-08
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "The reply states that the greet skill changed after its last bench (stale seal) and recommends re-running the bench before committing."

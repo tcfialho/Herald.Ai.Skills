@@ -1,0 +1,46 @@
+{
+  "run_id": "run-15",
+  "promoted_at": "2026-07-06T12:04:14Z",
+  "skill_hash": "06c8f0594e3b0784",
+  "contract_hash": "1021de6e68e0",
+  "matrix": {
+    "init-scaffold": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 100.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.128661,
+            "wall_s": 20.2,
+            "tokens_out": 719
+          }
+        ]
+      }
+    },
+    "seal-check": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 100.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.130146,
+            "wall_s": 17.0,
+            "tokens_out": 789
+          }
+        ]
+      }
+    }
+  },
+  "ladder": {
+    "stable_until": "sonnet",
+    "breaks_at": null
+  }
+}

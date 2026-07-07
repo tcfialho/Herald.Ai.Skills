@@ -36,7 +36,8 @@ Commit message policy:
 
 Output channels:
   stdout  JSON payload (final response; single line).
-  stderr  JSONL progress events (not persisted to disk).
+  stderr  JSONL events (not persisted to disk). debug/info are suppressed
+          unless COMMIT_TOOL_VERBOSE=1; warn/error are always emitted.
 
 Exit codes:
   0   Success.
@@ -109,8 +110,13 @@ def emit_result(payload: dict) -> None:
     sys.stdout.flush()
 
 
+VERBOSE_EVENTS = os.environ.get("COMMIT_TOOL_VERBOSE", "").lower() not in ("", "0", "false")
+
+
 def emit_event(level: str, event: str, **fields: Any) -> None:
-    """Write a JSONL progress event to stderr (no disk persistence)."""
+    """Write a JSONL event to stderr. debug/info only with COMMIT_TOOL_VERBOSE=1."""
+    if level in ("debug", "info") and not VERBOSE_EVENTS:
+        return
     record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "level": level,
@@ -226,11 +232,8 @@ def _get_remote_info(branch: Optional[str], is_empty: bool) -> dict:
     if not remote_names:
         return {"has_remote": False, "remotes": []}
 
-    remotes = []
-    for name in remote_names:
-        url_res = run_git(["remote", "get-url", name], check=False)
-        url = url_res.stdout.strip() if url_res.returncode == 0 else None
-        remotes.append({"name": name, "url": url})
+    # Names only — URLs may embed credentials and the agent never needs them.
+    remotes = [{"name": name} for name in remote_names]
 
     info: dict[str, Any] = {
         "has_remote": True,
@@ -551,8 +554,11 @@ def _collect_core(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         }
 
     temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX))
-    diffs_dir = _diffs_dir(temp_dir)
-    diffs_dir.mkdir(parents=True, exist_ok=True)
+    max_files = getattr(args, "max_files", MAX_FILES_DEFAULT)
+    diffs_dir: Optional[Path] = None
+    if max_files > 0:
+        diffs_dir = _diffs_dir(temp_dir)
+        diffs_dir.mkdir(parents=True, exist_ok=True)
     emit_event("info", "collect.temp_dir", path=_as_posix(temp_dir))
 
     numstat = run_git(["diff", "--cached", "--numstat"])
@@ -570,55 +576,54 @@ def _collect_core(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     summary_only = len(entries) > SUMMARY_ONLY_THRESHOLD
     truncated = False
     diffs_emitted = 0
-    max_files = getattr(args, "max_files", MAX_FILES_DEFAULT)
 
+    # Payload stays lean: `commit_paths` only when it differs from [path]
+    # (renames); diff fields only on entries that actually got a diff file.
     for entry in entries:
-        entry["commit_paths"] = _commit_paths_for_entry(entry)
-        if max_files <= 0 or entry["status"] == "D" or summary_only:
-            entry["diff_file"] = None
-            entry["diff_lines"] = 0
+        commit_paths = _commit_paths_for_entry(entry)
+        if len(commit_paths) > 1:
+            entry["commit_paths"] = commit_paths
+        if diffs_dir is None or entry["status"] == "D" or summary_only:
             continue
         if diffs_emitted >= max_files:
-            entry["diff_file"] = None
-            entry["diff_lines"] = 0
             truncated = True
             continue
         diff_text, line_count = _collect_diff(
             entry["path"], args.max_diff_lines_per_file,
         )
-        entry["diff_lines"] = line_count
         if line_count > args.max_diff_lines_per_file * 4:
             truncated = True
         diff_path = diffs_dir / f"{_short_hash(entry['path'])}.diff"
         try:
             diff_path.write_text(diff_text, encoding="utf-8")
             entry["diff_file"] = _as_posix(diff_path)
+            entry["diff_lines"] = line_count
             diffs_emitted += 1
         except OSError as exc:
             emit_event(
                 "warn", "collect.diff_write_failed",
                 path=entry["path"], error=str(exc),
             )
-            entry["diff_file"] = None
 
     _write_staging_manifest(temp_dir, entries)
 
-    return EXIT_OK, {
+    payload: dict[str, Any] = {
         "status": "ok",
         "temp_dir": _as_posix(temp_dir),
         "plan_path": _as_posix(_plan_path(temp_dir)),
         "manifest_path": _as_posix(_manifest_path(temp_dir)),
-        "diffs_dir": _as_posix(diffs_dir),
         "staged_files": entries,
         "total_staged": len(entries),
         "diff_summary": {
-            "total_files": len(entries),
             "total_added": added_total,
             "total_removed": removed_total,
         },
         "summary_only": summary_only,
         "truncated": truncated or max_files <= 0,
     }
+    if diffs_dir is not None:
+        payload["diffs_dir"] = _as_posix(diffs_dir)
+    return EXIT_OK, payload
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -657,29 +662,35 @@ def _fit_message(message: str, max_length: int) -> str:
     return message[:max_length].rstrip()
 
 
-def _infer_commit_type(paths: list[str], bucket: str) -> str:
-    norm = [_normalize_path(p) for p in paths]
+def _infer_commit_type(entries: list[dict[str, str]], bucket: str) -> str:
+    norm = [_normalize_path(e["path"]) for e in entries]
     lower_bucket = bucket.lower()
-    if all(p.endswith(".md") for p in norm):
+    if all(p.endswith((".md", ".rst")) for p in norm):
         return "docs"
-    if "test" in lower_bucket or any("/test" in p or p.startswith("test/") for p in norm):
+    if "test" in lower_bucket or any("/test" in p or p.startswith("test") for p in norm):
         return "test"
-    if all(p.endswith((".yml", ".yaml", ".json", ".toml", ".lock")) for p in norm):
+    if all(p.endswith((".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".lock")) for p in norm):
         return "chore"
-    if all(p.endswith((".js", ".ts", ".css")) for p in norm):
-        return "style"
+    if all(e["status"] == "A" for e in entries):
+        return "feat"
     return "refactor"
 
 
-def _build_group_message(commit_type: str, bucket: str, max_length: int) -> str:
+def _build_group_message(
+    commit_type: str,
+    bucket: str,
+    entries: list[dict[str, str]],
+    max_length: int,
+) -> str:
     slug = _normalize_path(bucket)
     if slug.startswith("skills/"):
         slug = slug[len("skills/"):]
     slug = slug.replace("/", " ").strip() or "staged files"
-    prefix = f"{commit_type}: "
+    verb = "add" if all(e["status"] == "A" for e in entries) else "update"
+    prefix = f"{commit_type}: {verb} "
     budget = max_length - len(prefix)
     if budget < 1:
-        return _fit_message(f"{commit_type}: update", max_length)
+        return _fit_message(f"{commit_type}: {verb}", max_length)
     if len(slug) > budget:
         slug = slug[:budget].rstrip()
     return _fit_message(f"{prefix}{slug}", max_length)
@@ -692,10 +703,10 @@ def _draft_plan_from_entries(
     deletions = sorted(e["path"] for e in entries if e.get("status") == "D")
     others = [e for e in entries if e.get("status") != "D"]
 
-    buckets: dict[str, list[str]] = {}
+    buckets: dict[str, list[dict[str, str]]] = {}
     for entry in others:
         key = _bucket_key(entry["path"])
-        buckets.setdefault(key, []).append(entry["path"])
+        buckets.setdefault(key, []).append(entry)
 
     groups: list[dict[str, Any]] = []
     gid = 1
@@ -709,12 +720,12 @@ def _draft_plan_from_entries(
         gid += 1
 
     for key in sorted(buckets.keys()):
-        paths = sorted(buckets[key])
-        commit_type = _infer_commit_type(paths, key)
+        group_entries = sorted(buckets[key], key=lambda e: e["path"])
+        commit_type = _infer_commit_type(group_entries, key)
         groups.append({
             "id": gid,
-            "message": _build_group_message(commit_type, key, max_length),
-            "files": paths,
+            "message": _build_group_message(commit_type, key, group_entries, max_length),
+            "files": [e["path"] for e in group_entries],
         })
         gid += 1
 

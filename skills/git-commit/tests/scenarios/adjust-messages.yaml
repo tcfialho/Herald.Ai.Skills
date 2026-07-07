@@ -1,0 +1,16 @@
+version: 1
+name: adjust-messages
+goal: "Option 3: user asks to reword a group's commit message; skill adjusts the plan, re-validates, re-displays, then user approves."
+fixture: no-remote
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script:
+  - expect_any: ["Approve and execute"]
+    respond_label: "Adjust messages"
+  - expect_any: ["adjust", "change", "what", "which", "grouping"]
+    respond: "Change the message of group 1 to exactly: feat: add awesome new feature"
+  - expect_any: ["Approve and execute"]
+    respond_label: "Approve and execute"
+contract_focus: [G-05, G-10, G-15, G-19]
+budget: {max_turns: 10, max_cost_usd: 0.80, timeout_s: 480}

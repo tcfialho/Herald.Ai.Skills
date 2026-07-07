@@ -1,0 +1,14 @@
+version: 1
+name: hook-failure
+goal: "A pre-commit hook rejects the docs group mid-batch: the tool must roll back the whole batch, preserve staging, and the agent must report git_stderr + rollback."
+fixture: hook-failure
+# explicit on purpose: this scenario measures the EXECUTION contract (rollback
+# path); activation reliability is measured by happy-path/no-remote (auto).
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script:
+  - expect_any: ["Approve and execute", "How do you want to proceed with this commit plan"]
+    respond_label: "Approve and execute"
+contract_focus: [G-11, G-12]
+budget: {max_turns: 8, max_cost_usd: 0.60, timeout_s: 420}

@@ -1,0 +1,147 @@
+# Testable contract for git-commit — deliberately separate from SKILL.md (P2:
+# editing the skill must never silently edit the test). Check hierarchy: state
+# probes on the fixture world first, transcript events second, judge last.
+version: 1
+skill: git-commit
+items:
+  - id: G-01
+    kind: judge
+    severity: major
+    scope: always
+    rule: "Every chat message starts with the `# 📦 git-commit` H1 banner."
+
+  - id: G-02
+    kind: deterministic
+    severity: critical
+    scope: always
+    rule: "No direct git mutations: every git operation goes through commit_tool.py."
+    checks:
+      - {type: forbidden_event, pattern: '("command": "|[;&|]\s*)git\s+(add|commit|push|reset|checkout|restore|rm)\b'}
+
+  - id: G-03
+    kind: deterministic
+    severity: critical
+    scope: always
+    rule: "No push without explicit user approval (state-verified on the local bare origin)."
+    checks:
+      - {type: state, cmd: "git -C origin.git log --format=%H -n 1", expect: unchanged_from_setup}
+      - {type: file_absent, path: "origin.git/push-attempts.log"}
+
+  - id: G-04
+    kind: deterministic
+    severity: critical
+    scope: always
+    rule: "Every commit message matches `<type>[!]: <description>` (no scope, ≤72 chars)."
+    checks:
+      - {type: state, cmd: "git log --format=%s", expect_regex_per_line: '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)!?: .{1,72}$'}
+
+  - id: G-05
+    kind: deterministic
+    severity: major
+    scope: focused
+    rule: "After an approved commit, the working tree is clean — every staged file landed in a commit."
+    checks:
+      - {type: state, cmd: "git status --porcelain", expect_equals: ""}
+
+  - id: G-06
+    kind: deterministic
+    severity: minor
+    scope: focused
+    rule: "Commits in one approved batch share a synchronized timestamp."
+    checks:
+      - {type: state, cmd: "git log --format=%ct -n 2", expect_regex: '\A(\d+)\r?\n\1'}
+
+  - id: G-07
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "The commit plan is presented with author/branch meta lines, one group section per commit with a blockquoted message and a Status|File table, and line counts."
+
+  - id: G-08
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "Menus render as a numbered list appended to the same chat message that carries the full plan/report (fallback mode), never replacing it."
+
+  - id: G-09
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "With no remote configured, the approval menu omits the 'commit and push' option and the plan warns that the push step will be skipped."
+
+  - id: G-10
+    kind: deterministic
+    severity: major
+    scope: focused
+    rule: "An approved plan produces at least one new commit."
+    checks:
+      - {type: state, cmd: "git rev-list --count HEAD", expect_regex: '^([2-9]|\d{2,})$'}
+
+  - id: G-11
+    kind: judge
+    severity: critical
+    scope: focused
+    rule: "On a mid-batch hook failure, the report names the failed commit ordinal, shows the verbatim git_stderr in a code block, and states the rollback (commits reverted, stage preserved)."
+
+  - id: G-12
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "After a hook failure the whole batch is rolled back (only the fixture's initial commit remains) and staging is preserved."
+    checks:
+      - {type: state, cmd: "git rev-list --count HEAD", expect_equals: "1"}
+      - {type: state, cmd: "git diff --cached --name-only", expect_regex: '\S'}
+
+  - id: G-13
+    kind: deterministic
+    severity: major
+    scope: always
+    rule: "commit_tool.py is actually used (the flow is never reimplemented by hand)."
+    checks:
+      - {type: required_event, pattern: 'commit_tool\.py'}
+
+  - id: G-14
+    kind: judge
+    severity: minor
+    scope: always
+    rule: "No tool-call narration in chat ('Checking…', 'Running preflight…'); results are reported, steps are not narrated."
+
+  - id: G-15
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "Option 3: the reworded message requested by the user is exactly what lands in the commit."
+    checks:
+      - {type: state, cmd: "git log --format=%s", expect_regex: '^feat: add awesome new feature$'}
+
+  - id: G-16
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "Option 4: commits carry the author set via set-author."
+    checks:
+      - {type: state, cmd: "git log --format=\"%an <%ae>\" -n 1", expect_equals: "Test Author <test.author@example.com>"}
+
+  - id: G-17
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "Option 5: commits land on the branch created via create-branch, never pushed."
+    checks:
+      - {type: state, cmd: "git branch --show-current", expect_equals: "feature/skill-test-demo"}
+
+  - id: G-18
+    kind: deterministic
+    severity: critical
+    scope: focused
+    rule: "Option 6: applied patterns land in .gitignore and the matching junk is unstaged — never committed."
+    checks:
+      - {type: state, cmd: "git check-ignore .env", expect_equals: ".env"}
+      - {type: state, cmd: "git check-ignore debug.log", expect_equals: "debug.log"}
+      - {type: state, cmd: "git ls-files -- .env debug.log", expect_equals: ""}
+
+  - id: G-19
+    kind: judge
+    severity: major
+    scope: focused
+    rule: "After an adjustment option (3-6) completes, the plan is re-displayed with the approval menu before anything is committed — the flow never jumps straight to execute."

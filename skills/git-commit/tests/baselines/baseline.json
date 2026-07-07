@@ -1,0 +1,148 @@
+{
+  "run_id": "run-19",
+  "promoted_at": "2026-07-07T04:20:45Z",
+  "skill_hash": "8edaa44834d91da3",
+  "contract_hash": "94aaf75e49b6",
+  "matrix": {
+    "adjust-messages": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 60.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.463012,
+            "wall_s": 78.5,
+            "tokens_out": 3047
+          }
+        ]
+      }
+    },
+    "change-author": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 60.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.595121,
+            "wall_s": 80.7,
+            "tokens_out": 3529
+          }
+        ]
+      }
+    },
+    "create-branch": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 100.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.58438,
+            "wall_s": 69.8,
+            "tokens_out": 3188
+          }
+        ]
+      }
+    },
+    "gitignore-cleanup": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 0.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.694756,
+            "wall_s": 111.8,
+            "tokens_out": 6384
+          }
+        ]
+      }
+    },
+    "happy-path-explicit": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 28.6,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.546509,
+            "wall_s": 64.4,
+            "tokens_out": 2905
+          }
+        ]
+      }
+    },
+    "happy-path": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 71.4,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.532916,
+            "wall_s": 74.2,
+            "tokens_out": 2821
+          }
+        ]
+      }
+    },
+    "hook-failure": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 100.0,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.312934,
+            "wall_s": 40.7,
+            "tokens_out": 2111
+          }
+        ]
+      }
+    },
+    "no-remote": {
+      "sonnet": {
+        "reps": [
+          {
+            "rep": 1,
+            "status": "pass",
+            "compliance_pct": 100.0,
+            "contract_pct": 77.8,
+            "critical_failed": [],
+            "activated": true,
+            "cost_usd": 0.388661,
+            "wall_s": 48.9,
+            "tokens_out": 2375
+          }
+        ]
+      }
+    }
+  },
+  "ladder": {
+    "stable_until": "sonnet",
+    "breaks_at": null
+  }
+}

@@ -1,0 +1,20 @@
+version: 1
+name: gitignore-cleanup
+goal: "Option 6: staged tree contains junk (.env, debug.log); user picks the .gitignore option, applies all candidates, junk is unstaged and never committed."
+fixture: gitignore-noise
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+# Step 0 is optional: run-11 showed sonnet proactively jumping to the
+# candidates menu without presenting the plan first — the flow must still
+# complete so the judge fails G-19/G-01 with citable evidence instead of a desync.
+user_script:
+  - expect_any: ["Approve and execute"]
+    respond_label: "gitignore"
+    optional: true
+  - expect_any: ["Apply all", "candidates"]
+    respond_label: "Apply all"
+  - expect_any: ["Approve and execute"]
+    respond_label: "Approve and execute"
+contract_focus: [G-05, G-10, G-18, G-19]
+budget: {max_turns: 12, max_cost_usd: 0.90, timeout_s: 540}

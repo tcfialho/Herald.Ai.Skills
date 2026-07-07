@@ -1,0 +1,14 @@
+version: 1
+name: happy-path-explicit
+goal: "Same journey as happy-path, but with the skill named — measures the EXECUTION contract (banner, plan format, approval flow) independent of the activation lottery that happy-path (auto) tracks."
+fixture: happy-path
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script:
+  - expect_any: ["Approve and execute", "How do you want to proceed with this commit plan"]
+    respond_label: "Approve and execute"
+  - expect_any: ["Push these commits now", "Push and set upstream", "Push?"]
+    respond_label: "Skip"
+contract_focus: [G-05, G-06, G-07, G-08, G-10]
+budget: {max_turns: 8, max_cost_usd: 0.60, timeout_s: 420}

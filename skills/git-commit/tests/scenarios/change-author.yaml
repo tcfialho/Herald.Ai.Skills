@@ -1,0 +1,16 @@
+version: 1
+name: change-author
+goal: "Option 4: user changes the commit author before approving; commits must carry the new author, set via set-author (never git config by hand)."
+fixture: no-remote
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script:
+  - expect_any: ["Approve and execute"]
+    respond_label: "Change author"
+  - expect_any: ["name", "email"]
+    respond: "Test Author <test.author@example.com>"
+  - expect_any: ["Approve and execute"]
+    respond_label: "Approve and execute"
+contract_focus: [G-05, G-10, G-16, G-19]
+budget: {max_turns: 10, max_cost_usd: 0.80, timeout_s: 480}

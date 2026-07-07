@@ -1,0 +1,16 @@
+version: 1
+name: create-branch
+goal: "Option 5: user creates a new branch before committing; commits must land on it, created via create-branch (never git checkout by hand)."
+fixture: no-remote
+invocation: explicit
+opening_prompt: "Use the git-commit skill to commit my changes."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script:
+  - expect_any: ["Approve and execute"]
+    respond_label: "Create new branch"
+  - expect_any: ["branch"]
+    respond: "feature/skill-test-demo"
+  - expect_any: ["Approve and execute"]
+    respond_label: "Approve and execute"
+contract_focus: [G-05, G-10, G-17, G-19]
+budget: {max_turns: 10, max_cost_usd: 0.80, timeout_s: 480}

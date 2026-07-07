@@ -36,7 +36,7 @@ def capture_state(workspace: Path, probe_cmds: list[str]) -> dict:
     files = sorted(
         p.relative_to(workspace).as_posix()
         for p in workspace.rglob("*")
-        if p.is_file() and ".git" not in p.parts and ".claude" not in p.parts
+        if p.is_file() and not {".git", ".claude", ".cursor"} & set(p.parts)
     )
     return {"probes": probes, "files": files}
 

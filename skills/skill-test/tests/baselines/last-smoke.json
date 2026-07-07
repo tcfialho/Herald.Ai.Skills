@@ -1,8 +1,8 @@
 {
   "skill": "skill-test",
-  "skill_hash": "45561447c5c8f7d7",
-  "run_id": "run-29",
-  "label": "regression-recheck",
+  "skill_hash": "58790b0609a42b11",
+  "run_id": "run-32",
+  "label": "copilot-adapter-e2e-2",
   "all_pass": false,
-  "ts": "2026-07-07T05:19:36Z"
+  "ts": "2026-07-07T10:16:12Z"
 }

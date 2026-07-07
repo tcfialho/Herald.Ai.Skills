@@ -75,7 +75,7 @@ Trigger: a skill was named ("testa a skill X", "quanto custa a skill X?") or pic
 
 **Skill WITHOUT tests/** — explain before offering anything (didactic, conversation language): this skill has no test suite yet; the suite lives in `skills/<name>/tests/` and is what defines "working" — `contract.yaml` (the rules), scenarios (simulated user journeys), fixtures (the disposable world). Without it there is nothing to execute: the harness measures against versioned criteria, it never invents them per run. **Menu:** 1. Create the suite now — `init --skill <name>` scaffolds, then you author contract + first scenario with the user (read `references/authoring.md` first) · 2. Back to home.
 
-**Skill WITH tests/** — run `seal --skill <name>` (+ reuse `overview` data) and render a short panel: seal state, last run (id · pass/cells · judged?), baseline, scenario list, ladder of the chosen adapter. Below it, the didactic menu — each option rendered in chat with its explanation translated to the conversation language, e.g. `1. **Smoke (2 células)** — teste rápido: melhor modelo, todos os cenários, 1 repetição. Recomendado: o selo está stale.` **Options (conditional):**
+**Skill WITH tests/** — run `seal --skill <name>` (+ reuse `overview` data) and render a short panel: seal state, last run (id · pass/cells · judged?), baseline, scenario list, and the active adapter + its ladder. The adapter resolves automatically (`models` payload carries `adapter` + `adapter_resolved_from`) — show the provenance, e.g. `Adapter: cursor (detectado pelo host)`. Below it, the didactic menu — each option rendered in chat with its explanation translated to the conversation language, e.g. `1. **Smoke (2 células)** — teste rápido: melhor modelo, todos os cenários, 1 repetição. Recomendado: o selo está stale.` **Options (conditional):**
 
 This menu is the CATALOG of what the skill can do for this skill — a first-time user discovers every capability here, without having to know what to ask for. Never hide a capability behind free-text-only phrasing; if it applies to this skill, it is a numbered option:
 
@@ -158,7 +158,9 @@ Never present `adapt` as fully automatic — it proposes, it does not commit.
 
 - Headless SUT sessions have no structured question tool — scenarios exercise the numbered-menu fallback path.
 - The SUT runs with least-privilege `allowed_tools` from the scenario; a permission error in a transcript usually means the allowlist is too tight, not a skill bug.
-- `profile` token *split* is an estimate (chars/4); only the totals are exact API usage. agy cells are always `usage_quality: estimated`.
+- `profile` token *split* is an estimate (chars/4); only the totals are exact API usage. agy and copilot cells are `usage_quality: estimated`; cursor totals are exact.
 - On the agy adapter, activation and tool events are not observable: no Activation line, event checks show as excluded — never count them as passed.
+- `--adapter` defaults to `auto`: explicit flag > `default_adapter` in config.yaml > host fingerprint (each CLI marks its shell children: `CLAUDECODE` / `CURSOR_AGENT` / `COPILOT_CLI` / `ANTIGRAVITY_AGENT`) > process ancestry when sessions are nested > the only CLI installed. Ambiguity is an error with guidance, never a silent guess. The judge always needs the `claude` CLI regardless of adapter; deterministic runs work without it.
+- cursor/copilot adapters: no USD cost telemetry (`cost_usd` stays 0 — budget is timeout + max_turns; copilot reports `premium_requests` per cell instead) and on free/current plans only `--model auto` is accepted, so their ladders have a single rung. Both observe activation natively (cursor: SKILL.md read from `.cursor/skills/`; copilot: `skill` tool call). User-level skills installed globally (Cursor `~/.cursor`, Copilot `~/.copilot`) leak into SUT context — a known fidelity divergence.
 
 Authoring contracts, scenarios and fixtures → read `references/authoring.md` first.

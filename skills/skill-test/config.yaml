@@ -3,6 +3,11 @@
 # a CLI exposes; you decide where it sits.
 version: 1
 
+# Adapter resolution when --adapter is omitted (or `auto`): host detection —
+# each CLI marks its shell children (CLAUDECODE / CURSOR_AGENT / COPILOT_CLI),
+# nested sessions are disambiguated by process ancestry. Uncomment to pin:
+# default_adapter: cursor
+
 # One judge per run, for ALL cells regardless of SUT adapter — mixing judges
 # across ladders would make cross-adapter comparison apples vs oranges.
 judge:
@@ -14,6 +19,10 @@ adapters:
     ladder: [opus, sonnet, haiku]
   agy:                   # display names verbatim from `agy models`
     ladder: ["Gemini 3.1 Pro (High)", "Gemini 3.5 Flash (Medium)", "GPT-OSS 120B (Medium)"]
+  cursor:                # ids from `agent models`; free plan accepts ONLY auto (named ids error)
+    ladder: [auto]
+  copilot:               # this plan accepts ONLY auto (named ids: "not available"); cells record the resolved model
+    ladder: [auto]
 
 defaults:
   floor_threshold: {compliance_critical: 100, contract: 90}

@@ -36,7 +36,65 @@ def get_adapter(name: str):
     if name == "agy":
         from . import agy
         return agy
-    raise ValueError(f"unknown adapter: {name} (available: claude_code, agy)")
+    if name == "cursor":
+        from . import cursor
+        return cursor
+    if name == "copilot":
+        from . import copilot
+        return copilot
+    raise ValueError(f"unknown adapter: {name} (available: claude_code, agy, cursor, copilot)")
+
+
+# adapter name -> executable that must exist for it to run
+ADAPTER_BINARIES = {
+    "claude_code": ("claude",),
+    "agy": ("agy",),
+    "cursor": ("agent", "cursor-agent"),
+    "copilot": ("copilot",),
+}
+
+
+def resolve_adapter(name: str | None, cfg: dict):
+    """Resolve which adapter to use: explicit --adapter > config.yaml
+    default_adapter > host detection (env fingerprint, then process tree) >
+    the only CLI installed. Ambiguity errors with guidance — never a silent
+    guess. Returns (adapter_module, provenance_string)."""
+    import shutil
+
+    from bench_lib.config import BenchError
+
+    if name and name != "auto":
+        return get_adapter(name), f"explicit --adapter {name}"
+    cfg_default = (cfg or {}).get("default_adapter")
+    if cfg_default:
+        return get_adapter(cfg_default), f"config.yaml default_adapter: {cfg_default}"
+
+    from .detect import detect_host
+    det = detect_host()
+    if det["adapter"]:
+        return get_adapter(det["adapter"]), f"host detected ({det['method']})"
+    if det["method"] == "ambiguous":
+        raise BenchError(
+            f"nested host sessions detected ({', '.join(det['candidates'])}) and the "
+            "process tree could not tell which is innermost",
+            next_step="pass --adapter <name> or set default_adapter in skill-test config.yaml",
+        )
+
+    installed = [
+        a for a, exes in ADAPTER_BINARIES.items()
+        if any(shutil.which(exe) for exe in exes)
+    ]
+    if len(installed) == 1:
+        return get_adapter(installed[0]), f"only CLI installed ({installed[0]})"
+    if not installed:
+        raise BenchError(
+            "no supported agent CLI found on PATH (claude, agent, copilot, agy)",
+            next_step="install at least one, or run `test_tool.py doctor` for details",
+        )
+    raise BenchError(
+        f"no host session detected and several CLIs are installed ({', '.join(installed)})",
+        next_step="pass --adapter <name> or set default_adapter in skill-test config.yaml",
+    )
 
 
 def sum_usage(invocations: list[Invocation]) -> dict:

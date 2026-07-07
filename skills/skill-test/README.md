@@ -202,5 +202,6 @@ cp -r release/skill-test ~/.claude/skills/
 ```
 
 Pré-requisitos: Python 3.10+, PyYAML (`pip install pyyaml`), e o CLI do modelo que você quer testar
-(`claude`, e opcionalmente `agy` para testar em modelos Gemini). Depois de instalar, abra
+(`claude`; opcionalmente `agy` para modelos Gemini, `agent` para o Cursor e `copilot` para o
+GitHub Copilot — nos planos free/atuais, Cursor e Copilot só aceitam `--model auto`). Depois de instalar, abra
 `/skill-test` e peça "verifica o ambiente" a qualquer momento para conferir se está tudo certo.

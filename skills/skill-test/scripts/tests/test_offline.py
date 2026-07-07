@@ -216,6 +216,149 @@ def test_agy_normalize_and_caps():
     assert agy.capabilities.parallel_safe is False
 
 
+def test_cursor_normalize_caps_and_activation():
+    from adapters import cursor
+    ws = "C:/tmp/bench-x"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "s1", "model": "Auto"},
+        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "ping"}]}},
+        {"type": "assistant", "message": {"role": "assistant",
+                                          "content": [{"type": "text", "text": "Vou ler a skill."}]}},
+        {"type": "tool_call", "subtype": "started",
+         "tool_call": {"readToolCall": {"args": {"path": f"{ws}/.cursor/skills/greet/SKILL.md"}}}},
+        {"type": "tool_call", "subtype": "completed",
+         "tool_call": {"readToolCall": {"args": {"path": f"{ws}/.cursor/skills/greet/SKILL.md"},
+                                        "result": {"success": {"content": "..."}}},
+                       "toolCallId": "c1"}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "PONG"},
+    ]
+    turns = cursor.normalize_events(events)
+    # user echo skipped; started-only tool_call skipped; completed → call + result
+    assert [t["role"] for t in turns] == ["assistant", "assistant", "tool_result"]
+    call = turns[1]["tool_calls"][0]
+    assert call["name"] == "Read" and call["input"]["file_path"].endswith("SKILL.md")
+    assert transcript.detect_activation(turns, "greet", workspace=ws) is True
+    assert cursor.capabilities.usage_quality == "exact"
+    assert cursor.capabilities.activation_observable is True
+    assert cursor.capabilities.parallel_safe is True
+
+
+def test_copilot_normalize_caps_and_premium_delta():
+    from adapters import copilot
+    events = [
+        {"type": "session.skills_loaded", "data": {"skills": [{"name": "greet"}]}},
+        {"type": "assistant.message",
+         "data": {"content": "", "model": "claude-haiku-4.5", "outputTokens": 12,
+                  "toolRequests": [{"toolCallId": "t1", "name": "skill",
+                                    "arguments": {"skill": "greet"}}]}},
+        {"type": "tool.execution_complete", "data": {"result": {"content": "Skill loaded"}}},
+        {"type": "assistant.message", "data": {"content": "DONE", "toolRequests": []}},
+    ]
+    turns = copilot.normalize_events(events)
+    assert [t["role"] for t in turns] == ["assistant", "tool_result", "assistant"]
+    assert turns[0]["tool_calls"][0] == {
+        "name": "Skill", "input": {"skill": "greet"},
+        "input_digest": turns[0]["tool_calls"][0]["input_digest"],
+    }
+    assert transcript.detect_activation(turns, "greet") is True
+    assert turns[2]["text"] == "DONE"
+    # foreign shells canonicalize to Bash — contracts pin `tool: Bash`
+    assert copilot._canonical_tool("powershell") == "Bash"
+    assert copilot._canonical_tool("shell") == "Bash"
+    assert copilot.capabilities.usage_quality == "estimated"
+    assert copilot.capabilities.parallel_safe is True
+    # premiumRequests is cumulative per session — only the delta is billed
+    assert copilot._premium_delta("sess-a", 0.33) == 0.33
+    assert copilot._premium_delta("sess-a", 0.66) == 0.33
+    assert copilot._premium_delta("sess-b", 0.5) == 0.5
+
+
+def test_new_adapter_quota_classification():
+    from adapters import copilot, cursor
+    assert cursor._QUOTA_RX.search(
+        "ActionRequiredError: Named models unavailable Free plans can only use Auto.")
+    assert cursor._QUOTA_RX.search("You have hit your usage limit for the month")
+    assert not cursor._QUOTA_RX.search("File not found")
+    assert copilot._QUOTA_RX.search("no remaining premium requests this month")
+    assert not copilot._QUOTA_RX.search("created pong.txt successfully")
+
+
+def test_get_adapter_knows_all_four():
+    from adapters.base import get_adapter
+    for name_ in ("claude_code", "agy", "cursor", "copilot"):
+        assert get_adapter(name_).name == name_
+
+
+def _with_env(pairs: dict, fn):
+    """Run fn with the fingerprint env vars set EXACTLY to `pairs`."""
+    import os
+    from adapters import detect
+    saved = {v: os.environ.pop(v, None) for v in detect.FINGERPRINTS.values()}
+    os.environ.update(pairs)
+    try:
+        return fn()
+    finally:
+        for var in pairs:
+            os.environ.pop(var, None)
+        for var, val in saved.items():
+            if val is not None:
+                os.environ[var] = val
+
+
+def test_detect_host_single_fingerprint_is_assertive():
+    from adapters import detect
+    det = _with_env({"CURSOR_AGENT": "1"}, detect.detect_host)
+    assert (det["adapter"], det["method"]) == ("cursor", "env")
+    det = _with_env({"ANTIGRAVITY_AGENT": "1"}, detect.detect_host)
+    assert (det["adapter"], det["method"]) == ("agy", "env")
+    det = _with_env({}, detect.detect_host)
+    assert (det["adapter"], det["method"]) == (None, "none")
+
+
+def test_detect_host_nested_resolves_via_process_tree():
+    from adapters import detect
+    orig = detect._ancestor_cmdlines
+    # innermost ancestor is the cursor node shim → cursor wins over inherited CLAUDECODE
+    detect._ancestor_cmdlines = lambda max_depth=15: [
+        "python.exe python test_tool.py run",
+        r"node.exe C:\Users\x\AppData\Local\cursor-agent\versions\1\index.js -p",
+        r"node.exe @anthropic-ai\claude-code\cli.js",
+    ]
+    try:
+        det = _with_env({"CLAUDECODE": "1", "CURSOR_AGENT": "1"}, detect.detect_host)
+        assert (det["adapter"], det["method"]) == ("cursor", "process_tree")
+    finally:
+        detect._ancestor_cmdlines = orig
+
+
+def test_resolve_adapter_precedence():
+    from adapters import detect
+    from adapters.base import resolve_adapter
+    from bench_lib.config import BenchError
+    # explicit beats everything
+    mod, src = _with_env({"CURSOR_AGENT": "1"}, lambda: resolve_adapter("copilot", {}))
+    assert mod.name == "copilot" and "explicit" in src
+    # config default_adapter beats host detection
+    mod, src = _with_env({"CURSOR_AGENT": "1"},
+                         lambda: resolve_adapter("auto", {"default_adapter": "agy"}))
+    assert mod.name == "agy" and "config.yaml" in src
+    # host detection when nothing pinned
+    mod, src = _with_env({"COPILOT_CLI": "1"}, lambda: resolve_adapter(None, {}))
+    assert mod.name == "copilot" and "host detected" in src
+    # unresolvable ambiguity errors with guidance instead of guessing
+    orig = detect._ancestor_cmdlines
+    detect._ancestor_cmdlines = lambda max_depth=15: []
+    try:
+        try:
+            _with_env({"CLAUDECODE": "1", "CURSOR_AGENT": "1"},
+                      lambda: resolve_adapter("auto", {}))
+            raise AssertionError("expected BenchError")
+        except BenchError as exc:
+            assert "--adapter" in (exc.next_step or "")
+    finally:
+        detect._ancestor_cmdlines = orig
+
+
 def test_check_error_isolated_from_compliance():
     items = [
         {"id": "E-01", "kind": "deterministic", "severity": "major",

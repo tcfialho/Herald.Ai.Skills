@@ -18,7 +18,7 @@ from bench_lib import judging, reporting, runner  # noqa: E402
 from bench_lib.assets import load_contract, load_scenarios  # noqa: E402
 from bench_lib.config import BenchError, load_bench_config, resolve_skill_dir  # noqa: E402
 from bench_lib.util import emit_result, force_utf8_stdio  # noqa: E402
-from adapters.base import get_adapter  # noqa: E402
+from adapters.base import resolve_adapter  # noqa: E402
 
 
 def _models_arg(value: str | None, cfg: dict, adapter_name: str) -> list[str]:
@@ -37,10 +37,10 @@ def cmd_init(args, cfg):
 
 def _do_run(args, cfg, *, skill_ref=None, label=None, models=None, run_kwargs=None):
     skill_dir = resolve_skill_dir(args.skill)
-    adapter = get_adapter(args.adapter)
+    adapter, adapter_from = resolve_adapter(getattr(args, "adapter", "auto"), cfg)
     contract = load_contract(skill_dir)
     scenarios = load_scenarios(skill_dir, args.scenarios)
-    models = models or _models_arg(getattr(args, "models", None), cfg, args.adapter)
+    models = models or _models_arg(getattr(args, "models", None), cfg, adapter.name)
     meta = runner.run_matrix(
         cfg=cfg, skill_dir=skill_dir, adapter=adapter, models=models,
         scenarios=scenarios, contract=contract,
@@ -53,6 +53,7 @@ def _do_run(args, cfg, *, skill_ref=None, label=None, models=None, run_kwargs=No
         label=label or getattr(args, "label", "") or "",
         **(run_kwargs or {}),
     )
+    meta["adapter_resolved_from"] = adapter_from
     return skill_dir, contract, scenarios, meta
 
 
@@ -91,9 +92,11 @@ def cmd_promote(args, cfg):
 
 
 def cmd_models(args, cfg):
-    adapter = get_adapter(args.adapter)
+    adapter, adapter_from = resolve_adapter(args.adapter, cfg)
     payload = adapter.list_models()
-    payload["ladder_in_bench_yaml"] = (cfg["adapters"].get(args.adapter) or {}).get("ladder")
+    payload["adapter"] = adapter.name
+    payload["adapter_resolved_from"] = adapter_from
+    payload["ladder_in_bench_yaml"] = (cfg["adapters"].get(adapter.name) or {}).get("ladder")
     emit_result(payload)
 
 
@@ -104,8 +107,9 @@ def cmd_seal(args, cfg):
 def cmd_activation_probe(args, cfg):
     skill_dir = resolve_skill_dir(args.skill)
     scenarios = load_scenarios(skill_dir, args.scenario)
+    adapter, _ = resolve_adapter(args.adapter, cfg)
     summary = runner.run_activation_probe(
-        cfg=cfg, skill_dir=skill_dir, adapter=get_adapter(args.adapter),
+        cfg=cfg, skill_dir=skill_dir, adapter=adapter,
         scenario=scenarios[0], model=args.model, repeat=args.repeat,
     )
     emit_result(summary)
@@ -132,7 +136,7 @@ def cmd_mutate(args, cfg):
         wanted = {m.strip() for m in args.only.split(",")}
         mutations = [m for m in mutations if m["id"] in wanted]
     report = mutating.mutate(
-        cfg=cfg, skill_dir=skill_dir, adapter=get_adapter(args.adapter),
+        cfg=cfg, skill_dir=skill_dir, adapter=resolve_adapter(args.adapter, cfg)[0],
         contract=contract, scenarios=scenarios, mutations=mutations,
         model=args.model, votes=args.votes,
     )
@@ -146,7 +150,7 @@ def cmd_adapt(args, cfg):
     contract = load_contract(skill_dir)
     scenarios = load_scenarios(skill_dir, args.scenarios)
     report = adapting.adapt(
-        cfg=cfg, skill_dir=skill_dir, adapter=get_adapter(args.adapter),
+        cfg=cfg, skill_dir=skill_dir, adapter=resolve_adapter(args.adapter, cfg)[0],
         contract=contract, scenarios=scenarios, target_model=args.model,
         target_items=[i.strip() for i in args.target_items.split(",")] if args.target_items else None,
         max_iters=args.max_iters or cfg["defaults"]["adaptation_max_iters"],
@@ -176,15 +180,25 @@ def cmd_doctor(args, cfg):
         check("pyyaml", True, "importable")
     except ImportError:
         check("pyyaml", False, "missing", "pip install pyyaml")
+    from adapters.detect import detect_host
+    det = detect_host()
+    check("host", True,
+          f"{det['adapter'] or 'not detected'} ({det['method']})"
+          + (f" — candidates: {', '.join(det['candidates'])}" if det["method"] == "ambiguous" else ""))
+    # every adapter CLI is individually optional — what is REQUIRED is having
+    # at least one of them (checked below). claude is also the judge.
+    optional_clis = {"claude", "agy", "agent", "copilot"}
     for cli, args_v, needed_for in (
         ("git", ["--version"], "fixtures and --skill-ref"),
-        ("claude", ["--version"], "the claude_code adapter (SUT sessions + judge)"),
-        ("agy", ["--version"], "the agy adapter (optional unless benching on Gemini)"),
+        ("claude", ["--version"], "the claude_code adapter AND the judge (judge/compare/mutate/adapt); deterministic runs on other adapters work without it"),
+        ("agy", ["--version"], "the agy adapter (only if benching on Gemini)"),
+        ("agent", ["--version"], "the cursor adapter (only if benching on Cursor)"),
+        ("copilot", ["--version"], "the copilot adapter (only if benching on Copilot)"),
     ):
         path = shutil.which(cli)
         if not path:
             check(cli, False, "not on PATH", f"install it — needed for {needed_for}")
-            if cli == "agy":
+            if cli in optional_clis:
                 checks[-1]["optional"] = True
             continue
         try:
@@ -193,6 +207,11 @@ def cmd_doctor(args, cfg):
             check(cli, proc.returncode == 0, proc.stdout.strip().splitlines()[0][:60] if proc.stdout else "?")
         except (OSError, subprocess.TimeoutExpired) as exc:
             check(cli, False, str(exc)[:80], f"reinstall {cli}")
+    adapter_clis = {"claude", "agy", "agent", "copilot"}
+    check("any_adapter_cli",
+          any(c["ok"] for c in checks if c["name"] in adapter_clis),
+          "at least one agent CLI available",
+          "install at least one supported CLI: claude, agent (Cursor), copilot, or agy")
     from bench_lib.config import SKILL_TEST_ROOT
     cfg_path = SKILL_TEST_ROOT / "config.yaml"
     check("config.yaml", cfg_path.exists(), str(cfg_path),
@@ -225,9 +244,11 @@ def cmd_profile(args, cfg):
 
 def cmd_floor(args, cfg):
     skill_dir = resolve_skill_dir(args.skill)
-    ladder = (cfg["adapters"].get(args.adapter) or {}).get("ladder")
+    adapter, _ = resolve_adapter(args.adapter, cfg)
+    args.adapter = adapter.name  # descend the resolved adapter's ladder
+    ladder = (cfg["adapters"].get(adapter.name) or {}).get("ladder")
     if not ladder:
-        raise BenchError(f"no ladder for adapter {args.adapter} in config.yaml",
+        raise BenchError(f"no ladder for adapter {adapter.name} in config.yaml",
                          next_step="add adapters.<name>.ladder to skill-test config.yaml (list models with `test_tool.py models`)")
     threshold = cfg["defaults"]["floor_threshold"]
     contract = load_contract(skill_dir)
@@ -250,7 +271,7 @@ def cmd_floor(args, cfg):
             floor_at = model
             break
     emit_result({
-        "skill": skill_dir.name, "adapter": args.adapter, "threshold": threshold,
+        "skill": skill_dir.name, "adapter": adapter.name, "threshold": threshold,
         "rungs": rungs, "floor_at": floor_at,
         "note": "native mode (fase 1); --adapt / adapted zone lands in fase 2",
     }, 0 if floor_at is None else 1)
@@ -269,7 +290,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("init", cmd_init)
 
     sp = add("run", cmd_run)
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--models")
     sp.add_argument("--scenarios", default="all")
     sp.add_argument("--repeat", type=int, default=1)
@@ -297,7 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run-id", dest="run_id", required=True)
 
     sp = add("models", cmd_models)
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
 
     add("seal", cmd_seal)
 
@@ -315,7 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("mutate", cmd_mutate)
     sp.add_argument("--model", required=True, help="model that executes the mutated skill")
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--scenarios", default="all")
     sp.add_argument("--mutations", help="mutations yaml (default: tests/mutations.yaml)")
     sp.add_argument("--only", help="comma-separated mutation ids to run")
@@ -323,7 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("adapt", cmd_adapt)
     sp.add_argument("--model", required=True, help="target (weak) model to adapt for")
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--scenarios", default="all")
     sp.add_argument("--target-items", dest="target_items")
     sp.add_argument("--max-iters", dest="max_iters", type=int)
@@ -333,11 +358,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("activation-probe", cmd_activation_probe)
     sp.add_argument("--scenario", required=True)
     sp.add_argument("--model", required=True)
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--repeat", type=int, default=3)
 
     sp = add("profile", cmd_profile)
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--models")
     sp.add_argument("--scenarios", default="all")
     sp.add_argument("--repeat", type=int, default=1)
@@ -347,7 +374,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-cost-usd", dest="max_cost_usd", type=float)
 
     sp = add("floor", cmd_floor)
-    sp.add_argument("--adapter", default="claude_code")
+    sp.add_argument("--adapter", default="auto",
+                    help="claude_code|cursor|copilot|agy|auto (auto = host detection)")
     sp.add_argument("--scenarios", default="all")
     sp.add_argument("--repeat", type=int, default=1)
     sp.add_argument("--jobs", type=int, default=1)

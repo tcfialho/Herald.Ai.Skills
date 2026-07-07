@@ -150,12 +150,19 @@ def invoke(
 
 
 def materialize(*, skill_src: Path, ref: str | None, workspace: Path) -> Path:
+    return materialize_into(
+        skill_src=skill_src, ref=ref,
+        dest=workspace / ".claude" / "skills" / skill_src.name,
+    )
+
+
+def materialize_into(*, skill_src: Path, ref: str | None, dest: Path) -> Path:
     """Place the skill-under-test inside the hermetic workspace.
 
     ref=None → copy of the working tree; otherwise extracted from git at `ref`.
     tests/ (and caches) never travel: the SUT must not see its own test assets.
+    Adapters with a different native skills dir (cursor) pass their own dest.
     """
-    dest = workspace / ".claude" / "skills" / skill_src.name
     if ref:
         _extract_from_git(skill_src, ref, dest)
     else:

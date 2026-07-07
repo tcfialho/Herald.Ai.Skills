@@ -64,3 +64,14 @@ items:
     severity: major
     scope: focused
     rule: "The reply states that the greet skill changed after its last bench (stale seal) and recommends re-running the bench before committing."
+
+  - id: B-09
+    kind: deterministic
+    severity: critical
+    scope: focused
+    # Added 2026-07-06 to verify the "don't judge while iterating" hard rule
+    # (§ Hard rules): quota burned re-judging every intermediate fix attempt
+    # was the exact incident this rule exists to prevent.
+    rule: "While iterating on a failing skill (no promote requested), the agent runs only deterministic checks — never `judge` — until the fix passes."
+    checks:
+      - {type: forbidden_event, tool: Bash, pattern: "test_tool\\.py\\s+judge|judge\\s+--skill"}

@@ -143,6 +143,13 @@ def cmd_report(skill_dir: Path, run_id: str, vs_baseline: bool, cell: str | None
         "judge": {"model": judge.get("judge_model"), "cost_usd": judge.get("cost_usd")} if judge else None,
         "drill_down_hint": "test_tool.py report --run-id <id> --cell <scenario>,<model>,<rep>",
     }
+    # Single-rep cells are a sample, not a verdict: the same skill text has
+    # been observed swinging 100→0 between identical runs (SUT non-determinism).
+    if int(meta.get("repeat", 1)) < 3:
+        report["verdict_quality"] = (
+            f"reps={meta.get('repeat', 1)}: NOT a verdict — pass/fail near the threshold is "
+            "within known run-to-run variance; decisions (promote, prompt changes) need --repeat 3"
+        )
     baseline_path = baselines_dir(skill_dir) / "baseline.json"
     if vs_baseline and baseline_path.exists():
         report["baseline"] = read_json(baseline_path)

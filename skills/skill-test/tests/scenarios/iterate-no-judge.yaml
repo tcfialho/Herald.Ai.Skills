@@ -1,0 +1,10 @@
+version: 1
+name: iterate-no-judge
+goal: "User asks to fix a failing skill via skill-test, with NO mention of promoting/finalizing. Verifies the agent iterates using only deterministic checks (`run`), never calling `judge`, per the 'don't judge while iterating' hard rule (§ Hard rules)."
+fixture: broken-widget
+invocation: explicit
+opening_prompt: "There's a skill at skills/widget with a failing test. Use the skill-test skill to find and fix the failing check, then confirm it passes. Just get it passing - don't worry about anything else."
+allowed_tools: ["Skill", "Read", "Glob", "Write", "Edit", "Bash", "PowerShell"]
+user_script: []
+contract_focus: [B-09]
+budget: {max_turns: 10, max_cost_usd: 0.50, timeout_s: 300}

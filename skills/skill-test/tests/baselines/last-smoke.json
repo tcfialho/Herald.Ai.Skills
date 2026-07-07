@@ -1,8 +1,8 @@
 {
   "skill": "skill-test",
-  "skill_hash": "2418a42400f508a9",
-  "run_id": "run-21",
-  "label": "silence-fix",
-  "all_pass": true,
-  "ts": "2026-07-06T12:45:50Z"
+  "skill_hash": "45561447c5c8f7d7",
+  "run_id": "run-29",
+  "label": "regression-recheck",
+  "all_pass": false,
+  "ts": "2026-07-07T05:19:36Z"
 }

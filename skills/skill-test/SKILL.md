@@ -119,6 +119,7 @@ For each picked row run `report --run-id <id> --cell <scenario>,<model>,<rep>` a
 ## Hard rules
 
 - Never judge a skill yourself in place of `judge` — verdicts come from the script + configured judge model, reproducible outside this chat.
+- **Do not run `judge` while iterating on a skill.** During tuning, deterministic checks are the only feedback loop. `judge` runs at decision points only: final verdict of a change, `floor`, or before `promote` (which requires 3 votes). Judging every intermediate run burns quota on verdicts that the next edit invalidates.
 - Never edit a skill's `tests/contract.yaml` to make a failing run pass. Contract changes are deliberate, user-approved acts.
 - Failures are reported with their cited evidence, verbatim. `infra_error`/`desync` cells are never presented as skill regressions.
 - Every cell burns the user's plan quota (session limits) or API credits: smoke scope by default; full matrices, floor and repeat ≥3 only via explicit menu pick, with the cell count on the label. If a SUT session returns a "session limit" message, stop launching cells, tell the user when it resets, and offer to resume later (`run --resume`).

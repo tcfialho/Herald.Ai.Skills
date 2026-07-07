@@ -211,3 +211,4 @@ __marimo__/
 
 # Added by git-commit skill
 .claude/
+skills/skill-test/usage.json

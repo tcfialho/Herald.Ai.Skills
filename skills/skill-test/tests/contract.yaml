@@ -33,7 +33,8 @@ items:
     rule: "After init, the target skill has the full tests/ scaffolding on disk."
     checks:
       - {type: file_exists, path: "skills/greet/tests/contract.yaml"}
-      - {type: file_exists, path: "skills/greet/tests/baselines/.gitignore"}
+      - {type: file_exists, path: "skills/greet/tests/.gitignore"}
+      - {type: file_exists, path: "skills/greet/tests/README.md"}
       - {type: file_exists, path: "skills/greet/tests/fixtures/**/setup.py"}
 
   - id: B-05

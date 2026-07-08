@@ -54,7 +54,7 @@ def adapt(
     scenarios_by_name = {s["name"]: s for s in scenarios}
     threshold = cfg["defaults"]["floor_threshold"]
 
-    base = runner.baselines_dir(skill_dir)
+    base = runner.runs_dir(skill_dir)
     base.mkdir(parents=True, exist_ok=True)
     nums = [int(p.name.split("-")[1]) for p in base.glob("adapt-*") if p.name.split("-")[1].isdigit()]
     adir = base / f"adapt-{max(nums, default=0) + 1}"

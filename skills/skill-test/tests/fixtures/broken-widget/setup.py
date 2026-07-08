@@ -57,4 +57,4 @@ budget: {max_turns: 6, max_cost_usd: 0.30, timeout_s: 240}
 """,
     encoding="utf-8",
 )
-(widget / "tests" / "baselines" / ".gitignore").write_text("run-*/\nadapt-*/\nprobe-*/\n", encoding="utf-8")
+(widget / "tests" / ".gitignore").write_text("runs/\n", encoding="utf-8")

@@ -168,24 +168,49 @@ Ao rodar `init` numa skill (ex.: `skills/minha-skill/`), a skill-test cria isto 
 skills/minha-skill/
   SKILL.md                        ← já existia, não é tocado
   tests/
+    README.md                     ← este mapa, gerado dentro da própria pasta
+    .gitignore                    ← uma linha: ignora runs/
     contract.yaml                 ← as regras da skill, em formato testável
     scenarios/
       <cenario>.yaml               ← uma jornada de usuário simulada por arquivo
     fixtures/
       <nome>/setup.py             ← script que monta o "mundo" descartável do teste
-    baselines/
+    baselines/                    ← SÓ ponteiros pequenos, versionados
       baseline.json               ← última versão aprovada (referência oficial)
       last-smoke.json             ← selo: hash da skill no último teste (detecta "mudou sem retestar")
-      run-N/                      ← histórico de execuções (não versionado no git)
+      mutate-latest.json          ← última calibração da suíte
+    runs/                         ← TEMPORÁRIO: pode apagar a pasta inteira
+      run-N/  adapt-N/  probe-N/  ← execuções (transcritos, logs, diffs propostos)
 ```
 
 **Por que fica dentro da skill, e não numa pasta central?** Porque o teste pertence à skill —
 evolui, é revisado e é commitado junto com ela, exatamente como uma pasta `tests/` de código.
 
-**O que é versionado no git e o que não é:** `contract.yaml`, `scenarios/`, `fixtures/`,
-`baseline.json` e `last-smoke.json` são pequenos e ficam no repositório. As pastas `run-N/` de cada
-execução (transcritos, logs) são artefato local, ignoradas pelo `.gitignore` — são regeneráveis a
-qualquer momento rodando o teste de novo.
+**Todo arquivo na pasta de uma skill é de um de três tipos:**
+
+| Tipo | Versiona no git? | Vai na distribuição? | Pode apagar? |
+|---|:-:|:-:|---|
+| **SKILL** — o produto | ✅ | ✅ | ❌ |
+| **TESTE** — o controle de qualidade | ✅ | ❌ | ❌ |
+| **TEMPORÁRIO** — saída de execução/build | ❌ (ignorado) | ❌ | ✅ sempre — regenerável |
+
+E o mapa de quem é o quê (usando a própria skill-test como exemplo, já que ela se auto-testa):
+
+- **SKILL:** `SKILL.md`, `scripts/`, `references/`, `config.yaml`.
+- **TESTE:** `tests/contract.yaml`, `tests/scenarios/`, `tests/fixtures/` e `tests/baselines/`
+  (só 3 ponteiros pequenos: `baseline.json` — referência aprovada, `last-smoke.json` — selo,
+  `mutate-latest.json` — calibração; apagar não quebra nada, mas perde referência/selo). No caso
+  da skill-test, também `scripts/tests/` (testes unitários do harness).
+- **TEMPORÁRIO:** `tests/runs/` — a pasta **inteira** (execuções `run-*`, diffs propostos
+  `adapt-*`, sondas `probe-*`) — e a pasta `release/` (saída de build, regenerada por
+  `./release.sh`). Pode apagar as duas a qualquer momento.
+
+O `init` já grava um `.gitignore` que implementa a coluna "Versiona?" e um `tests/README.md` com
+essa classificação — quem abrir a pasta descobre as regras sem precisar deste documento.
+
+Na distribuição a separação é automática: o release exclui TESTE e TEMPORÁRIO (veja a seção
+seguinte), e durante um teste o harness copia a skill **sem** `tests/` para o ambiente
+descartável — o modelo testado nunca vê os próprios testes.
 
 ## Benefício esperado
 

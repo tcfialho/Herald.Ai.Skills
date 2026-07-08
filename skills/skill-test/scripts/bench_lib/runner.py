@@ -28,21 +28,27 @@ TERMINAL_STATUSES = {"pass", "fail", "not_activated", "desync", "over_budget"}
 # ---------------------------------------------------------------- run store
 
 def baselines_dir(skill_dir: Path) -> Path:
+    """Versioned pointers only (baseline.json, last-smoke.json, mutate-latest.json)."""
     return skill_dir / "tests" / "baselines"
 
 
+def runs_dir(skill_dir: Path) -> Path:
+    """Execution artifacts (run-*/adapt-*/probe-*): gitignored, deletable as a whole."""
+    return skill_dir / "tests" / "runs"
+
+
 def new_run_id(skill_dir: Path) -> str:
-    base = baselines_dir(skill_dir)
+    base = runs_dir(skill_dir)
     base.mkdir(parents=True, exist_ok=True)
     nums = [int(p.name.split("-")[1]) for p in base.glob("run-*") if p.name.split("-")[1].isdigit()]
     return f"run-{max(nums, default=0) + 1}"
 
 
 def run_dir(skill_dir: Path, run_id: str) -> Path:
-    d = baselines_dir(skill_dir) / run_id
+    d = runs_dir(skill_dir) / run_id
     if not d.exists():
         raise BenchError(f"run not found: {d}",
-                         next_step="existing runs live in <skill>/tests/baselines/run-*; check `overview`")
+                         next_step="existing runs live in <skill>/tests/runs/run-*; check `overview`")
     return d
 
 
@@ -102,7 +108,7 @@ def run_matrix(
         run_id = resume_run_id
     else:
         run_id = new_run_id(skill_dir)
-        rdir = baselines_dir(skill_dir) / run_id
+        rdir = runs_dir(skill_dir) / run_id
         (rdir / "cells").mkdir(parents=True)
         run_meta = {
             "run_id": run_id,
@@ -353,7 +359,7 @@ def run_activation_probe(
         )
     defaults = cfg["defaults"]
     budget = dict(scenario.get("budget") or {})
-    base = baselines_dir(skill_dir)
+    base = runs_dir(skill_dir)
     base.mkdir(parents=True, exist_ok=True)
     nums = [int(p.name.split("-")[1]) for p in base.glob("probe-*") if p.name.split("-")[1].isdigit()]
     pdir = base / f"probe-{max(nums, default=0) + 1}"
@@ -413,6 +419,7 @@ def _setup_fixture(scenario: dict, skill_dir: Path, workspace: Path) -> None:
 
 def _write_seal(skill_dir: Path, run_meta: dict) -> None:
     all_pass = run_meta.get("cells_run", 0) > 0 and run_meta.get("cells_run") == run_meta.get("cells_pass")
+    baselines_dir(skill_dir).mkdir(parents=True, exist_ok=True)
     dump_json(baselines_dir(skill_dir) / "last-smoke.json", {
         "skill": skill_dir.name,
         "skill_hash": run_meta["skill_hash"],

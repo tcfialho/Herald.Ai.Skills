@@ -4,12 +4,34 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import BenchError
-from .runner import baselines_dir, load_progress, run_dir
+from .runner import baselines_dir, load_progress, run_dir, runs_dir
 from .util import dump_json, estimate_tokens, now_iso, read_json, skill_behavior_hash
 
 # ---------------------------------------------------------------- init
 
-GITIGNORE = "run-*/cells/\nrun-*/judge-raw/\n"
+GITIGNORE = "runs/\n"
+
+TESTS_README = """\
+# tests/ — suíte de testes desta skill (gerada por skill-test)
+
+Regra única: **`runs/` é temporário — pode apagar a pasta inteira quando quiser.
+Todo o resto é o teste — versionado no git junto com a skill.**
+Nada de `tests/` é distribuído com a skill instalada.
+
+| Pasta/arquivo | O que é | Tipo |
+|---|---|---|
+| `contract.yaml` | as regras da skill em formato testável | Teste — versiona |
+| `scenarios/*.yaml` | jornadas de usuário simuladas | Teste — versiona |
+| `fixtures/*/setup.py` | monta o "mundo" descartável de cada teste | Teste — versiona |
+| `baselines/` | 3 ponteiros pequenos: `baseline.json` (versão aprovada), `last-smoke.json` (selo "testada após a última edição"), `mutate-latest.json` (calibração) | Teste — versiona |
+| `runs/` | execuções: `run-*/` (transcritos/logs), `adapt-*/` (diffs propostos), `probe-*/` | **Temporário — apagável, ignorado no git** |
+
+Notas:
+- O `.gitignore` desta pasta já ignora `runs/` — você não precisa fazer nada.
+- Apagar `baselines/` não quebra nada, mas perde a referência de comparação e o selo.
+- Distribuição/instalação da skill NUNCA inclui `tests/`; o harness também não envia esta
+  pasta ao modelo durante os testes.
+"""
 
 EXAMPLE_SCENARIO = """\
 # Example scenario — copy, rename, edit. See skill-test references/authoring.md.
@@ -67,16 +89,17 @@ items: []
 def cmd_init(skill_dir: Path) -> dict:
     tests = skill_dir / "tests"
     created = []
-    for sub in ("scenarios", "fixtures/example", "baselines"):
+    for sub in ("scenarios", "fixtures/example", "baselines", "runs"):
         d = tests / sub
         if not d.exists():
             d.mkdir(parents=True)
             created.append(str(d))
     targets = {
+        tests / "README.md": TESTS_README,
         tests / "contract.yaml": CONTRACT_SKELETON.format(skill=skill_dir.name),
         tests / "scenarios" / "example.yaml.disabled": EXAMPLE_SCENARIO,
         tests / "fixtures" / "example" / "setup.py": EXAMPLE_SETUP,
-        tests / "baselines" / ".gitignore": GITIGNORE,
+        tests / ".gitignore": GITIGNORE,
     }
     for path, content in targets.items():
         if not path.exists():
@@ -333,7 +356,7 @@ def cmd_overview(skills_root: Path) -> dict:
                 entry["scenarios"] = []
             entry.update(seal_info(skill_dir))
             runs = sorted(
-                (skill_dir / "tests" / "baselines").glob("run-*"),
+                runs_dir(skill_dir).glob("run-*"),
                 key=lambda p: int(p.name.split("-")[1]),
             )
             if runs and (runs[-1] / "run.json").exists():

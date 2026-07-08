@@ -136,7 +136,7 @@ For each picked row run `report --run-id <id> --cell <scenario>,<model>,<rep>` a
 
 Run `adapt --skill <name> --model <model that failed> --target-items <ids> --scenarios <cheapest scenarios that cover the items>`. It iterates patch→re-run on a disposable COPY of the skill (never the real file) and gates every accepted patch against the top of the ladder so a fix for the weak model can't regress the strong one. Render the result:
 
-- **Converged** — show the rationale of the winning patch and the token cost (`prompt_tax`), then the diff (`tests/baselines/adapt-N/final.diff`). Ask for explicit approval before applying it to the real `SKILL.md`. On approval: apply the diff, then run a smoke to refresh the seal.
+- **Converged** — show the rationale of the winning patch and the token cost (`prompt_tax`), then the diff (`tests/runs/adapt-N/final.diff`). Ask for explicit approval before applying it to the real `SKILL.md`. On approval: apply the diff, then run a smoke to refresh the seal.
 - **Did not converge** — say so plainly with the last iteration's evidence; do not keep iterating past `max_iters` without the user explicitly asking for another round (each iteration is a full run + gate, real cost).
 
 Never present `adapt` as fully automatic — it proposes, it does not commit.

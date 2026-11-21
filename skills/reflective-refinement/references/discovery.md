@@ -1,6 +1,6 @@
 # Discover a worthwhile improvement
 
-Use **only when the request leaves the outcome or opportunity materially open**, or a new finding warrants explicitly revisiting scope. The aim is to choose a valuable refinement of the existing artifact, not to generate a product roadmap. A category such as "optimize" need not identify which outcome to prioritize. For a resolved target, skip this protocol. For a request for advice only, present ranked opportunities and evidence without editing.
+Use **only when the request leaves the outcome or opportunity materially open**, or a new finding warrants explicitly revisiting scope. A comparison with existing high-quality references can define the intended outcome without a numeric target; do not turn a clear "make X comparable to Y" request into a question about which cosmetic detail to change. The aim is to choose a valuable refinement of the existing artifact, not to generate a product roadmap. A category such as "optimize" need not identify which outcome to prioritize. For a resolved target, skip this protocol. For a request for advice only, present ranked opportunities and evidence without editing.
 
 ## 1. Observe the actual use
 

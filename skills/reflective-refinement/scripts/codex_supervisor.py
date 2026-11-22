@@ -20,6 +20,7 @@ import loop_guard  # noqa: E402
 import agent_adapters
 import evaluation_gate
 import blind_review
+import strategy_review
 
 
 class SupervisorError(Exception):
@@ -120,6 +121,10 @@ def run_verifier(args, invocation):
 
 def automatic_protected_paths(args, contract):
     paths = [str(p) for p in args.protect]
+    state_dir = getattr(args, 'state_dir', None)
+    target_baseline = state_dir / 'target_baseline.json' if state_dir is not None else None
+    if target_baseline is not None and target_baseline.is_file():
+        paths.append(str(target_baseline))
     if args.evaluation_contract:
         paths.append(str(args.evaluation_contract))
         paths.extend(contract.get('protected_paths', []))
@@ -197,15 +202,24 @@ def external_trial_review(args, state, invocation, contract):
     if contract:
         incumbent_metrics = next((r['verified_metrics'] for r in reversed(state['records'][:-1])
                                   if r.get('outcome') == 'keep' and r.get('verified_metrics')), {})
+        target_baseline_path = args.state_dir / 'target_baseline.json'
+        target_unmet = False
+        if state.get('mode') == 'goal' and target_baseline_path.is_file():
+            target_baseline = json.loads(target_baseline_path.read_text())
+            if (target_baseline.get('contract_sha256') != evaluation_gate.digest(args.evaluation_contract)
+                    or target_baseline.get('status') != 'NOT_MET'):
+                raise SupervisorError('baseline target proof was invalid or changed')
+            target_unmet = True
         outcome = evaluation_gate.evaluate(args.evaluation_contract, args.workspace,
-                                           incumbent_metrics=incumbent_metrics)
+                                           incumbent_metrics=incumbent_metrics,
+                                           baseline_target_unmet=target_unmet)
         if contract.get('review', {}).get('required'):
             outcome['judge_status'] = review_result['status']
             outcome['judge'] = review_result
             outcome['quality_target'] = review_result.get('quality_target', {'status': 'UNKNOWN'})
             outcome['decision'] = evaluation_gate.decision(contract, outcome['benchmark_status'], review_result['status'])
             outcome['target_completion'] = evaluation_gate.completion_status(
-                outcome['decision'], outcome['quality_target'], outcome.get('target_checks'))
+                outcome['decision'], outcome['quality_target'], outcome.get('target_checks'), outcome.get('target_metrics'))
     else:
         outcome = {'schema_version':1,'decision':'HOLD', 'benchmark_status':'UNVERIFIED',
                    'judge_status':'NOT_RUN', 'reason':'no frozen outcome evaluation contract; no independent quality claim'}
@@ -217,7 +231,7 @@ def external_trial_review(args, state, invocation, contract):
     if contract:
         outcome['target_completion'] = evaluation_gate.completion_status(
             outcome['decision'], outcome.get('quality_target', {'status': 'UNKNOWN'}),
-            outcome.get('target_checks'))
+            outcome.get('target_checks'), outcome.get('target_metrics'))
     report = logs / f'{invocation:04d}.evaluation.json'
     report.write_text(json.dumps(outcome, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     if state.get('promotion_mode') == 'external' and outcome['decision'] != 'KEEP':
@@ -373,22 +387,28 @@ def restore_unapproved_candidate(args, record, before_commit, before_sha, snapsh
     return str(archive / f'{record["number"]:04d}.patch')
 
 
-def user_prompt(args, state, attempt):
+def user_prompt(args, state, attempt, strategy=None):
     status = loop_guard.status_dict(state)
     guard = SKILL_ROOT / 'scripts' / 'loop_guard.py'
     target = state['target']
+    required = ('the externally verified DONE WHEN objective' if state.get('mode') == 'goal'
+                else f'EXACTLY {target} real candidate experiments')
+    progress = (f'{status["completed"]} evaluated; target not yet verified' if state.get('mode') == 'goal'
+                else f'{status["completed"]}/{target}')
     retry_guidance = ''
     if attempt > 1:
-        retry_guidance = (f'LAST INVOCATION DID NOT PRODUCE A VERIFIED TRIAL ({status["completed"]}/{target}). '
+        retry_guidance = (f'LAST INVOCATION DID NOT PRODUCE A VERIFIED TRIAL ({progress}). '
                           'A prose declaration of success is not the user-requested count. '
                           'Choose a DIFFERENT, evidence-grounded mechanism or test an unexamined adverse state; '
                           'perform begin/change/inspect/finish before returning. '
                           'If this is impossible, state the precise tool/access blocker; do not invent a trial.')
+    advice = (f'INDEPENDENT SEARCH CRITIQUE (advisory, independently verify it): '
+              f'{json.dumps(strategy, ensure_ascii=False)}' if strategy else '')
     return f'''Read and apply the exact installed skill at: {SKILL_ROOT / 'SKILL.md'}.
-Read its references/iteration-contract.md. You are a supervised worker (RR_SUPERVISED=1); DO NOT launch another supervisor. The user explicitly ordered EXACTLY {target} actual refinement experiments, not up to {target}.
+Read its references/iteration-contract.md. You are a supervised worker (RR_SUPERVISED=1); DO NOT launch another supervisor. The user requires {required}.
 GOAL: {state['goal']}
 Source artifact (file/dir) to modify: {state['artifact']}
-Current supervisor receipt count: {status['completed']}/{target}. Do not treat a model answer or one A/B comparison as completion.
+Current supervisor state: {progress}. Do not treat a model answer, proxy improvement or one A/B comparison as completion.
 
 Make EXACTLY ONE meaningful attempt during this invocation, using this evidence-driven procedure:
 1. Inspect the current Git baseline, latest evaluation report (especially target_completion, blocking findings and failed scenarios), and actual output. A KEEP can still be NOT_MET. Choose one new concrete hypothesis tied to a remaining gap or adversarial quality test. Do not repeat the same candidate.
@@ -398,8 +418,9 @@ Make EXACTLY ONE meaningful attempt during this invocation, using this evidence-
 5. Do not commit source yourself; the supervisor creates the Git checkpoint after independent approval. Preserve fresh evidence.
 6. Stop this AGENT INVOCATION after ONE verified trial, not the user's entire campaign; the external supervisor will run the next trial. You may not declare the campaign COMPLETE. If unable to test, report the precise BLOCKER, and leave the count unchanged.
 
-If you believe the objective already looks solved, look for remaining edge cases, alternative mechanisms, robust confirmation or improvements under different states. Do not fabricate experiments, make no-op changes, or lower quality just to reach {target}. If there is no honest new test, report incomplete/blocker.
+If you believe the objective already looks solved, check the frozen DONE WHEN conditions and remaining edge cases. Do not fabricate experiments, make no-op changes, or lower quality merely to increase the count. If there is no honest new test, report incomplete/blocker. Do not ask for approval to use public/synthetic/anonymous alternatives; prefer them to personal logged-in data. Never access sensitive account data without authorization.
 Important: the external guard, not your prose, decides the count. Retries for this slot: {attempt}. {retry_guidance}
+{advice}
 '''
 
 
@@ -455,7 +476,8 @@ def main(argv=None):
     p.add_argument('--workspace', required=True, type=Path)
     p.add_argument('--artifact', required=True, help='source file/directory relative to workspace')
     p.add_argument('--goal', required=True)
-    p.add_argument('--iterations', type=int, required=True)
+    p.add_argument('--iterations', type=int, default=0)
+    p.add_argument('--until-target', action='store_true', help='keep going until independent DONE WHEN verification succeeds')
     p.add_argument('--evidence-kind', choices=('generic', 'visual'), default='generic')
     p.add_argument('--state-dir', type=Path, help='default WORKSPACE/.refinement/loop-contract')
     p.add_argument('--codex-bin', default='codex', help='backwards-compatible Codex executable')
@@ -469,7 +491,8 @@ def main(argv=None):
     p.add_argument('--claude-permission-mode', choices=('acceptEdits', 'auto', 'default', 'plan', 'bypassPermissions'), default='acceptEdits')
     p.add_argument('--turn-timeout', type=int, default=1800, help='hang protection per turn; not a campaign budget')
     p.add_argument('--max-seconds', type=int, default=0, help='optional total wall-clock budget, 0 = no added deadline')
-    p.add_argument('--max-retries', type=int, default=2, help='additional chances after model fails to record a trial')
+    p.add_argument('--max-retries', type=int, default=8, help='additional chances after model fails to record a trial')
+    p.add_argument('--strategy-provider', choices=('auto', 'none', 'codex', 'claude'), default='auto')
     p.add_argument('--allow-dirty', action='store_true')
     p.add_argument('--protect', action='append', default=[], metavar='PATH', help='file in workspace whose contents must not change')
     p.add_argument('--verify-command', help='optional pinned argv command to independently check promoted candidates')
@@ -505,8 +528,15 @@ def main(argv=None):
         raise SupervisorError('visual campaign has no independent judge adapter; cannot promise visual improvement')
     args.harness = agent_adapters.resolve_provider(args.harness, args.agent_command)
     args.agent_bin = args.agent_bin or (args.codex_bin if args.harness == 'codex' else None)
-    if args.iterations < 1 or args.turn_timeout < 1 or args.max_seconds < 0 or args.max_retries < 0 or args.verify_timeout < 1:
+    if (args.until_target and args.iterations != 0) or (not args.until_target and args.iterations < 1) or (
+            args.turn_timeout < 1 or args.max_seconds < 0 or args.max_retries < 0 or args.verify_timeout < 1):
         p.error('invalid count or duration')
+    if args.until_target and (not contract or not (
+            contract.get('target_checks') or contract.get('review', {}).get('quality_gate') or
+            any('target_value' in m for m in contract.get('primary_metrics', [])))):
+        raise SupervisorError('until-target requires an independently measurable DONE WHEN contract')
+    if args.until_target and contract['kind'] == 'performance' and not contract.get('case_requirements'):
+        raise SupervisorError('performance goal requires measured representative case_requirements')
     if args.dry_run:
         ensure_git(args.workspace, args.allow_dirty)
         print(json.dumps({'workspace': str(args.workspace), 'goal': args.goal, 'iterations': args.iterations,
@@ -528,6 +558,7 @@ def main(argv=None):
         init_result = loop_guard.main(['init', '--state-dir', str(args.state_dir), '--workspace', str(args.workspace),
                                        '--artifact', args.artifact, '--goal', args.goal,
                                        '--iterations', str(args.iterations), '--evidence-kind', args.evidence_kind] +
+                                      (['--goal-mode'] if args.until_target else []) +
                                       (['--external-promotion'] if not (args.state_dir / 'contract.json').exists() else []))
         if init_result:
             raise SupervisorError('contract initialization rejected')
@@ -536,15 +567,35 @@ def main(argv=None):
             raise SupervisorError('unfinished prior promotion: inspect source, evaluation report and Git before resuming')
         if state['evidence_kind'] != args.evidence_kind or state['workspace'] != str(args.workspace):
             raise SupervisorError('workspace or evidence type differs from original contract')
+        if args.until_target and contract['kind'] == 'performance' and not state['records']:
+            result = evaluation_gate.preflight_performance_benchmark(contract, args.workspace)
+            (args.state_dir / 'baseline_fidelity.json').write_text(
+                json.dumps(result, indent=2) + '\n', encoding='utf-8')
+        if args.until_target and contract.get('target_checks') and not contract.get('primary_metrics') and not contract.get('review', {}).get('required'):
+            target_baseline_path = args.state_dir / 'target_baseline.json'
+            if state['records']:
+                if not target_baseline_path.is_file():
+                    raise SupervisorError('cannot resume: frozen target baseline proof is missing')
+            else:
+                baseline_check = evaluation_gate.target_checks_assessment(contract, args.workspace)
+                if baseline_check['status'] != 'NOT_MET':
+                    raise SupervisorError('baseline target checks must fail reproducibly before they can prove a gain: '
+                                          + baseline_check['status'])
+                target_baseline_path.write_text(json.dumps({
+                    'status': 'NOT_MET', 'contract_sha256': evaluation_gate.digest(args.evaluation_contract),
+                    'source_sha256': state['initial_sha256'], 'checks': baseline_check['checks']}, indent=2) + '\n')
         contract_metadata = {k: state[k] for k in ('version', 'goal', 'target', 'workspace',
                                                   'artifact', 'evidence_kind', 'initial_sha256', 'created_ns', 'promotion_mode')}
+        contract_metadata['mode'] = state.get('mode', 'fixed')
+        contract_metadata['goal_met'] = state.get('goal_met', False)
         pinned = protected_hashes(args.workspace, automatic_protected_paths(args, contract))
         controller_digest = hashlib.sha256((SKILL_ROOT / 'scripts' / 'loop_guard.py').read_bytes()).hexdigest()
         lock = create_lock(lock_path)
         started = time.monotonic()
         no_progress = 0
+        no_improvement = 0
         invocations = 0
-        while len(state['records']) < args.iterations:
+        while not (state.get('goal_met', False) if args.until_target else len(state['records']) >= args.iterations):
             check_review_provenance(args.state_dir, state)
             verify_accepted_evidence(args, state)
             if args.max_seconds and time.monotonic() - started >= args.max_seconds:
@@ -564,7 +615,28 @@ def main(argv=None):
                 snapshot.write_bytes(parent_source.read_bytes())
             count_before = len(state['records'])
             invocations += 1
-            prompt = user_prompt(args, state, no_progress + 1)
+            strategy = None
+            should_rethink = args.until_target and (no_progress in (2, 5) or no_improvement >= 3)
+            provider = args.harness if args.strategy_provider == 'auto' else args.strategy_provider
+            if should_rethink and provider in ('codex', 'claude'):
+                prior_reports = []
+                for record in state['records'][-5:]:
+                    path = record.get('evaluation_file')
+                    if path:
+                        try:
+                            prior_reports.append(json.loads((args.state_dir / path).read_text()))
+                        except (OSError, ValueError):
+                            pass
+                try:
+                    strategy = strategy_review.advise(provider, state['goal'], state['records'], prior_reports,
+                                                       executable=args.agent_bin, timeout=min(120, args.verify_timeout))
+                    location = args.state_dir / 'strategy'
+                    location.mkdir(parents=True, exist_ok=True)
+                    (location / f'{invocations:04d}.json').write_text(json.dumps(strategy, indent=2) + '\n')
+                except strategy_review.StrategyError as exc:
+                    print(f'STRATEGY_UNAVAILABLE: {exc}; continue with deterministic recovery', flush=True)
+                no_improvement = 0
+            prompt = user_prompt(args, state, no_progress + 1, strategy=strategy)
             remaining_total = args.max_seconds - (time.monotonic() - started) if args.max_seconds else None
             allowed_turn_seconds = min(args.turn_timeout, max(0.1, remaining_total)) if remaining_total is not None else args.turn_timeout
             failure = None
@@ -630,14 +702,22 @@ def main(argv=None):
                         state = read_state(args.state_dir)
                     state = snapshot_accepted_evidence(args, state, contract)
                     verify_accepted_evidence(args, state)
+                    if args.until_target and external_outcome and external_outcome['target_completion'] == 'MET':
+                        loop_guard.mark_goal_met(args.state_dir, last['number'])
+                        state = read_state(args.state_dir)
+                        print(f'GOAL_MET: independently verified at trial {last["number"]}', flush=True)
                     print(f'CHECKPOINT: accepted trial {last["number"]} commit={commit}', flush=True)
                 else:
                     raise SupervisorError(f'unknown trial outcome: {last["outcome"]}')
                 no_progress = 0
+                no_improvement = 0 if last['outcome'] == 'keep' else no_improvement + 1
                 if failure:
                     print(f'WORKER_WARNING: receipt valid despite CLI error: {failure}', flush=True)
                 print(f'PROGRESS: {len(state["records"])}/{args.iterations}; kept={sum(r["outcome"] == "keep" for r in state["records"])}; log={log}', flush=True)
-        print(f'COMPLETE: {args.iterations}/{args.iterations} recorded experiments; quality still requires external judgment')
+        if args.until_target:
+            print(f'COMPLETE: verified target reached after {len(state["records"])} evaluated trials')
+        else:
+            print(f'COMPLETE: {args.iterations}/{args.iterations} recorded experiments; quality still requires external judgment')
         return 0
     except (SupervisorError, loop_guard.GuardError, OSError, ValueError, agent_adapters.AdapterError, evaluation_gate.EvaluationError) as exc:
         print(f'INCOMPLETE: {exc}; state={args.state_dir}', file=sys.stderr)

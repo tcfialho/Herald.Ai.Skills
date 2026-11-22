@@ -183,6 +183,24 @@ def read_contract(path):
             raise EvaluationError('primary metrics require direction and a numerical reference')
         if float(metric.get('minimum_gain', 0)) < 0:
             raise EvaluationError('minimum_gain cannot be negative')
+        if 'target_value' in metric and (not isinstance(metric['target_value'], (int, float))
+                or isinstance(metric['target_value'], bool) or not math.isfinite(metric['target_value'])):
+            raise EvaluationError('target_value must be a finite measured threshold')
+    fidelity = data.get('case_requirements', {})
+    if not isinstance(fidelity, dict) or not set(fidelity).issubset(set(cases)):
+        raise EvaluationError('case_requirements must reference frozen cases')
+    for case, requirements in fidelity.items():
+        if not isinstance(requirements, dict) or not requirements:
+            raise EvaluationError(f'case {case} needs measurable representativeness requirements')
+        for name, bounds in requirements.items():
+            if not isinstance(name, str) or not name or not isinstance(bounds, dict) or not bounds:
+                raise EvaluationError('case requirement must name a measured observable')
+            if not any(k in bounds for k in ('minimum', 'maximum')) or any(
+                    k not in ('minimum', 'maximum') or not isinstance(v, (int, float)) or
+                    isinstance(v, bool) or not math.isfinite(v) for k, v in bounds.items()):
+                raise EvaluationError('case observable requires valid numeric bounds')
+            if bounds.get('minimum', -math.inf) > bounds.get('maximum', math.inf):
+                raise EvaluationError('inverted case fidelity bounds')
     return data, hashlib.sha256(raw).hexdigest()
 
 
@@ -196,13 +214,68 @@ def run_argv(argv, workspace, timeout=120):
             'stderr': result.stderr[-12000:]}
 
 
-def metric_assessment(contract, report, incumbent_metrics=None):
+def scenario_fidelity(contract, report):
     expected_cases = set(contract['case_ids'])
     if not isinstance(report, dict) or report.get('schema_version') != 1:
         raise EvaluationError('benchmark must emit one versioned JSON object')
     case_ids = report.get('case_ids')
     if not isinstance(case_ids, list) or set(case_ids) != expected_cases or len(case_ids) != len(expected_cases):
         raise EvaluationError('benchmark case_ids do not match frozen contract')
+    requirements = contract.get('case_requirements', {})
+    if requirements:
+        observations = report.get('case_facts', {})
+        if not isinstance(observations, dict):
+            raise EvaluationError('benchmark did not measure scenario fidelity')
+        for case, measures in requirements.items():
+            actual = observations.get(case, {})
+            if not isinstance(actual, dict):
+                raise EvaluationError(f'missing representative scenario {case}')
+            for key, bounds in measures.items():
+                value = actual.get(key)
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                    raise EvaluationError(f'unmeasured case fidelity: {case}.{key}')
+                if value < bounds.get('minimum', -math.inf) or value > bounds.get('maximum', math.inf):
+                    raise EvaluationError(f'unrepresentative benchmark case: {case}.{key}={value}')
+
+
+def preflight_performance_benchmark(contract, workspace):
+    """Reject an empty, altered, or irrelevant baseline before optimizing the wrong workload."""
+    benchmark = contract.get('benchmark')
+    if not benchmark:
+        raise EvaluationError('goal-driven performance needs an executable baseline benchmark')
+    output = run_argv(benchmark['argv'], workspace, benchmark.get('timeout_seconds', 120))
+    if output['returncode']:
+        raise EvaluationError('baseline benchmark failed; establish a valid workload first')
+    try:
+        report = json.loads(output['stdout'])
+    except ValueError as exc:
+        raise EvaluationError('baseline benchmark did not emit a JSON report') from exc
+    scenario_fidelity(contract, report)
+    observations = report.get('metrics', {})
+    samples = report.get('samples', {})
+    if not isinstance(observations, dict) or not isinstance(samples, dict):
+        raise EvaluationError('baseline needs actual metric values and raw samples')
+    import statistics
+    for metric in contract.get('primary_metrics', []):
+        name = metric['name']
+        values = samples.get(name)
+        current = observations.get(name)
+        if not isinstance(values, list) or len(values) < 3 or any(
+                not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(x) for x in values):
+            raise EvaluationError(f'baseline {name} requires at least three raw repeats')
+        if not isinstance(current, (int, float)) or not math.isfinite(current) or abs(statistics.median(values) - current) > 1e-6:
+            raise EvaluationError(f'baseline {name} is inconsistent with raw samples')
+        tolerance = metric.get('reference_tolerance', 0.1)
+        if not isinstance(tolerance, (int, float)) or tolerance < 0 or tolerance > 1:
+            raise EvaluationError('baseline tolerance must be between 0 and 1')
+        if abs(current - metric['reference']) > max(1e-6, abs(metric['reference']) * tolerance):
+            raise EvaluationError(f'baseline {name} does not match frozen reference')
+    return {'status': 'PASS', 'case_ids': report['case_ids'], 'case_facts': report.get('case_facts', {}),
+            'metrics': observations, 'samples': samples}
+
+
+def metric_assessment(contract, report, incumbent_metrics=None):
+    scenario_fidelity(contract, report)
     guards = report.get('guards')
     if not isinstance(guards, dict) or not guards or any(v is not True for v in guards.values()):
         return {'status': 'REJECT', 'reason': 'functional or integrity guard failed', 'guards': guards}
@@ -302,7 +375,7 @@ def review_verdict(report, criteria_ids, case_ids, candidate_label, quality_gate
     return 'REJECT', 'blind judge preferred incumbent'
 
 
-def external_assessment(contract, workspace, incumbent_metrics=None):
+def external_assessment(contract, workspace, incumbent_metrics=None, baseline_target_unmet=False):
     checks = []
     for check in contract.get('hard_checks', []):
         output = run_argv(check['argv'], workspace, check.get('timeout_seconds', 120))
@@ -341,6 +414,13 @@ def external_assessment(contract, workspace, incumbent_metrics=None):
         return 'PASS', {'reason': 'benchmark and hard checks passed', 'checks': checks, 'benchmark': score}
     if (not contract.get('review', {}).get('required') and
             not any(m.get('role', 'primary') == 'primary' for m in contract.get('primary_metrics', []))):
+        if baseline_target_unmet and contract.get('target_checks'):
+            target_proof = target_checks_assessment(contract, workspace)
+            if target_proof['status'] == 'MET':
+                return 'PASS', {'reason': 'previously failing frozen target checks now pass',
+                                'checks': checks, 'target_check_proof': target_proof}
+            return 'HOLD', {'reason': 'previously failing target checks remain incomplete',
+                            'checks': checks, 'target_check_proof': target_proof}
         return 'HOLD', {'reason': 'regression guards alone do not demonstrate user-visible improvement'}
     if contract.get('primary_metrics'):
         return 'HOLD', {'reason': 'primary metric needs executable benchmark'}
@@ -375,13 +455,32 @@ def target_checks_assessment(contract, workspace):
     return {'status': 'NOT_MET' if failed else 'MET', 'checks': checked}
 
 
-def completion_status(decision_status, quality_target, target_checks=None):
+def target_metrics_assessment(contract, details):
+    metrics = [m for m in contract.get('primary_metrics', []) if 'target_value' in m]
+    if not metrics:
+        return {'status': 'NOT_CONFIGURED'}
+    observed = details.get('benchmark', {}).get('metrics', {})
+    if not isinstance(observed, dict):
+        return {'status': 'UNKNOWN'}
+    cases = []
+    for metric in metrics:
+        item = observed.get(metric['name'])
+        if not isinstance(item, dict) or not isinstance(item.get('value'), (float, int)):
+            return {'status': 'UNKNOWN'}
+        value = item['value']
+        reached = value <= metric['target_value'] if metric['direction'] == 'lower' else value >= metric['target_value']
+        cases.append({'name': metric['name'], 'value': value, 'target_value': metric['target_value'], 'met': reached})
+    return {'status': 'MET' if all(x['met'] for x in cases) else 'NOT_MET', 'metrics': cases}
+
+
+def completion_status(decision_status, quality_target, target_checks=None, target_metrics=None):
     if decision_status == 'HOLD':
         return 'UNKNOWN'
     if decision_status == 'REJECT':
         return 'NOT_MET'
     statuses = [quality_target.get('status', 'UNKNOWN'),
-                (target_checks or {}).get('status', 'NOT_CONFIGURED')]
+                (target_checks or {}).get('status', 'NOT_CONFIGURED'),
+                (target_metrics or {}).get('status', 'NOT_CONFIGURED')]
     if 'NOT_MET' in statuses:
         return 'NOT_MET'
     if 'UNKNOWN' in statuses:
@@ -390,10 +489,10 @@ def completion_status(decision_status, quality_target, target_checks=None):
         return 'MET'
     return 'NOT_CONFIGURED'
 
-def evaluate(contract_path, workspace, review=None, incumbent_metrics=None):
+def evaluate(contract_path, workspace, review=None, incumbent_metrics=None, baseline_target_unmet=False):
     contract, contract_hash = read_contract(contract_path)
     try:
-        benchmark_status, details = external_assessment(contract, workspace, incumbent_metrics)
+        benchmark_status, details = external_assessment(contract, workspace, incumbent_metrics, baseline_target_unmet)
     except (OSError, subprocess.TimeoutExpired, EvaluationError) as exc:
         benchmark_status, details = 'HOLD', {'reason': f'benchmark not verifiable: {exc}'}
     judge_status = 'NOT_REQUIRED'
@@ -421,10 +520,15 @@ def evaluate(contract_path, workspace, review=None, incumbent_metrics=None):
                                                            contract['case_ids'], contract['review'].get('candidate_label', 'B'))
             except EvaluationError as exc:
                 quality_target = {'status': 'UNKNOWN', 'reason': str(exc)}
-    target_checks = (target_checks_assessment(contract, workspace) if benchmark_status == 'PASS'
+    target_checks = (details.get('target_check_proof') if benchmark_status == 'PASS' and
+                     isinstance(details, dict) and details.get('target_check_proof') else
+                     target_checks_assessment(contract, workspace) if benchmark_status == 'PASS'
                      else {'status': 'UNKNOWN', 'reason': 'benchmark did not pass'})
-    completion = completion_status(status, quality_target, target_checks)
+    target_metrics = (target_metrics_assessment(contract, details) if benchmark_status == 'PASS'
+                      else {'status': 'UNKNOWN'})
+    completion = completion_status(status, quality_target, target_checks, target_metrics)
     return {'schema_version': 1, 'quality_target': quality_target, 'target_checks': target_checks,
+            'target_metrics': target_metrics,
             'target_completion': completion,
             'contract_sha256': contract_hash, 'decision': status,
             'benchmark_status': benchmark_status, 'benchmark': details,

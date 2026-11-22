@@ -12,7 +12,7 @@ CATEGORIES = {
                'Compare actual rendered outcomes under matched viewpoints with an independent blind judge.'),
     'ux': (r'\b(usabilidade|ux|fluxo[s]?|navega[cç][aã]o|acessibilidade|acessar|experi[eê]ncia de usu[aá]rio)\b',
            'Measure task completion, errors, accessibility, recovery and subjective friction.'),
-    'performance': (r'\b(lat[eê]ncia|throughput|desempenho|performance|r[aá]pid[oa]|fps|mem[oó]ria|cpu|aloca[cç][aã]o)\b',
+    'performance': (r'\b(lat[eê]ncia|throughput|desempenho|performance|r[aá]pid[oa]|fps|mem[oó]ria|cpu|aloca[cç][aã]o|speed|faster|loading|carregamento|renderiza[cç][aã]o|tempo de quadro)\b',
                     'Measure complete workloads and behavior guards in paired representative regimes.'),
     'functionality': (r'\b(funcionalidade|feature|requisito|comportamento|bug|erro|corrig[ia]|regra de neg[oó]cio)\b',
                       'Verify the new behavior plus existing behavior with edge cases and negative controls.'),
@@ -26,6 +26,9 @@ CATEGORIES = {
 def infer(goal):
     text=goal.casefold()
     hits=[kind for kind,(pattern,_) in CATEGORIES.items() if re.search(pattern,text)]
+    if 'performance' in hits and 'visual' in hits and re.search(
+            r'(tempo de render|render speed|faster render|render mais r[aá]pid|render time)', text):
+        hits.remove('visual')
     if len(hits)==1:
         return hits[0],hits
     if not hits:
@@ -41,7 +44,7 @@ def proposed(goal, forced=None):
     qualitative=kind in {'visual','ux','documentation','maintainability','mixed'}
     return {'schema_version':1, 'draft':True, 'kind':kind, 'user_goal':goal,
             'primary_outcome':goal, 'case_ids':[], 'hard_checks':[],
-            'benchmark':None, 'target_checks':[], 'primary_metrics':[], 'protected_paths':[],
+            'benchmark':None, 'target_checks':[], 'primary_metrics':[], 'case_requirements':{}, 'protected_paths':[],
             'reference_evidence':{},
             'review':{'required':qualitative, 'criteria':[], 'criterion_guidance':{},
                       'required_nonregression':[], 'reverse_order':kind in {'visual','ux'},
@@ -50,6 +53,10 @@ def proposed(goal, forced=None):
                            'Replace draft=true only after scenarios, baselines, guards and checks are grounded.',
                            'Use rendered evidence and blind judge for visual/UX. For code quality assess real future changes.',
                            'Freeze priority_order, target_checks and severity anchors if appropriate; KEEP is not DONE.',
+                           'For goal-driven optimization, provide executable DONE WHEN (target_value, target_checks or quality_gate).',
+                           'Prove workload fidelity: define representative case_requirements such as visible content, real transactions or complete tasks.',
+                           'Never optimize an empty/placeholder benchmark and claim improvement on the real workload.',
+                           'Try public, synthetic or anonymous representative alternatives before requesting sensitive account data.',
                            'Check a known-bad and A=A control before trusting evaluation.'],
             'possible_kinds':hits, 'measurement_advice':CATEGORIES.get(kind, ('', 'Select relevant outcomes from actual observations.'))[1]}
 

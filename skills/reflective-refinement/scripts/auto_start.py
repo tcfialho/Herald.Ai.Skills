@@ -48,18 +48,21 @@ def run_status(state_dir):
         state = None
     count = len(state['records']) if state else 0
     target = state['target'] if state else (record or {}).get('iterations', 0)
+    goal_mode = (state.get('mode') == 'goal') if state else (record or {}).get('goal_mode', False)
     running = process_alive(record.get('pid')) if record else False
     if (state_dir / 'invalid').exists():
         status = 'INVALID'
+    elif state and loop_guard.status_dict(state)['status'] == 'COMPLETE':
+        status = 'COMPLETE'
     elif running:
         status = 'RUNNING'
-    elif target and count == target and not any(r['outcome'] == 'pending' for r in (state or {}).get('records', [])):
-        status = 'COMPLETE'
-    elif record:
+    elif record or state:
         status = 'INCOMPLETE'
     else:
         status = 'NOT_STARTED'
-    return {'status': status, 'completed': count, 'target': target, 'pid': record.get('pid') if record else None,
+    return {'status': status, 'completed': count, 'target': None if goal_mode else target,
+            'goal_mode': goal_mode, 'goal_met': state.get('goal_met', False) if state else False,
+            'pid': record.get('pid') if record else None,
             'log': record.get('log') if record else None, 'running': running, 'state_dir': str(state_dir),
             'kept': sum(r['outcome'] == 'keep' for r in state['records']) if state else 0,
             'unverified': sum(r['outcome'] in ('pending','hold') for r in state['records']) if state else 0}
@@ -99,18 +102,21 @@ def emit(info):
 
 def validate_record(record, args, state_dir):
     intended = {'workspace': str(args.workspace), 'artifact': args.artifact, 'goal': args.goal,
+                'goal_mode': args.until_target,
                 'iterations': args.iterations, 'evidence_kind': args.evidence_kind,
                 'harness': args.harness, 'evaluation_contract': str(args.evaluation_contract) if args.evaluation_contract else None}
     for key, value in intended.items():
-        if ((' '.join(record.get(key, '').split()) if key == 'goal' else record.get(key)) != value):
+        actual = record.get(key, False if key == 'goal_mode' else None)
+        if ((' '.join(actual.split()) if key == 'goal' else actual) != value):
             raise LaunchError(f'existing campaign has different {key}; do not overwrite {state_dir}')
 
 
 def start(args):
     if os.environ.get('RR_SUPERVISED') == '1':
         raise LaunchError('a supervised worker must not launch another supervisor')
-    if args.iterations < 1 or not args.goal.strip():
-        raise LaunchError('provide a positive iteration count and the complete user goal')
+    if not args.goal.strip() or (args.until_target and args.iterations != 0) or (
+            not args.until_target and args.iterations < 1):
+        raise LaunchError('fixed mode needs positive iterations; until-target needs --until-target and zero iterations')
     root = args.workspace.resolve(strict=True)
     if not root.is_dir():
         raise LaunchError('workspace must be a directory')
@@ -135,9 +141,17 @@ def start(args):
         raise LaunchError('visual campaigns need a frozen evaluation contract with blind review')
     if args.evaluation_contract:
         args.evaluation_contract = args.evaluation_contract.resolve(strict=True)
-        codex_supervisor.evaluation_gate.read_contract(args.evaluation_contract)
+        contract = codex_supervisor.evaluation_gate.read_contract(args.evaluation_contract)[0]
         if not args.evaluation_contract.is_relative_to(root):
             raise LaunchError('evaluation contract must be inside project workspace')
+    else:
+        contract = None
+    if args.until_target and (not contract or not (
+            contract.get('target_checks') or contract.get('review', {}).get('quality_gate') or
+            any('target_value' in m for m in contract.get('primary_metrics', [])))):
+        raise LaunchError('until-target mode requires frozen, independently measurable DONE WHEN criteria')
+    if args.until_target and contract['kind'] == 'performance' and not contract.get('case_requirements'):
+        raise LaunchError('performance goal must verify representative workload content with case_requirements')
     with launch_lock(state_dir):
         record = launch_record(state_dir)
         if record:
@@ -148,10 +162,8 @@ def start(args):
             if state['status'] == 'RUNNING' or state['status'] == 'COMPLETE':
                 emit(state)
                 return 0
-            if not args.resume:
-                raise LaunchError(f'prior controller is not running; inspect {record["log"]} and receipts, then resume')
             if loop_guard.load(state_dir).get('pending'):
-                raise LaunchError('unfinished experiment exists; reconcile before resume')
+                raise LaunchError('unfinished experiment exists; restore and audit source before relaunching')
         elif args.resume:
             raise LaunchError('no existing campaign to resume')
         if args.max_seconds < 0 or args.turn_timeout < 1:
@@ -164,7 +176,10 @@ def start(args):
                    '--codex-bin', str(executable) if args.harness == 'codex' else args.codex_bin,
                    '--harness', args.harness, '--turn-timeout', str(args.turn_timeout),
                    '--max-retries', str(args.max_retries), '--verify-timeout', str(args.verify_timeout),
+                   '--strategy-provider', args.strategy_provider,
                    '--claude-permission-mode', args.claude_permission_mode]
+        if args.until_target:
+            command.append('--until-target')
         if args.agent_bin and args.harness != 'codex':
             command.extend(['--agent-bin', str(executable)])
         if args.agent_command:
@@ -191,6 +206,7 @@ def start(args):
                                        stdout=stream, stderr=subprocess.STDOUT,
                                        start_new_session=(os.name != 'nt'), close_fds=True)
         data = {'pid': process.pid, 'workspace': str(root), 'artifact': args.artifact,
+                'goal_mode': args.until_target,
                 'goal': ' '.join(args.goal.split()), 'iterations': args.iterations, 'evidence_kind': args.evidence_kind,
                 'harness': args.harness, 'evaluation_contract': str(args.evaluation_contract) if args.evaluation_contract else None,
                 'log': str(log), 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
@@ -208,7 +224,8 @@ def main(argv=None):
     launch.add_argument('--workspace', type=Path, required=True)
     launch.add_argument('--artifact', required=True)
     launch.add_argument('--goal', required=True)
-    launch.add_argument('--iterations', type=int, required=True)
+    launch.add_argument('--iterations', type=int, default=0)
+    launch.add_argument('--until-target', action='store_true', help='enforce externally verified DONE WHEN, not an iteration count')
     launch.add_argument('--evidence-kind', choices=('visual', 'generic'), default='generic')
     launch.add_argument('--state-dir', type=Path)
     launch.add_argument('--codex-bin', default='codex')
@@ -220,7 +237,8 @@ def main(argv=None):
     launch.add_argument('--judge-command', help='JSON argv command for independent review')
     launch.add_argument('--model')
     launch.add_argument('--turn-timeout', type=int, default=1800)
-    launch.add_argument('--max-retries', type=int, default=2)
+    launch.add_argument('--max-retries', type=int, default=8)
+    launch.add_argument('--strategy-provider', choices=('auto', 'none', 'codex', 'claude'), default='auto')
     launch.add_argument('--verify-timeout', type=int, default=300)
     launch.add_argument('--claude-permission-mode', choices=('acceptEdits','auto','default','plan','bypassPermissions'), default='acceptEdits')
     launch.add_argument('--max-seconds', type=int, default=0)

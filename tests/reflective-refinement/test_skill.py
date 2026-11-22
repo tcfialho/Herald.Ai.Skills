@@ -12,7 +12,7 @@ class SkillIntegrityTests(unittest.TestCase):
         self.assertTrue(skill.startswith('---\n'))
         header = skill.split('---\n', 2)[1]
         self.assertRegex(header, r'(?m)^name: reflective-refinement$')
-        self.assertRegex(header, r"(?m)^\s+version: '0\.5\.6'$" )
+        self.assertRegex(header, r"(?m)^\s+version: '0\.5\.7'$" )
         self.assertRegex(header, r'(?m)^description: .+')
         self.assertLess(len(skill.splitlines()), 500)
         self.assertLess(len(skill), 20000)
@@ -34,7 +34,8 @@ class SkillIntegrityTests(unittest.TestCase):
                     'references/iteration-contract.md','references/auto-enforcement.md','references/evaluation-harness.md',
                     'references/judge.schema.json','references/evaluation-contract.example.json',
                     'scripts/loop_guard.py','scripts/codex_supervisor.py','scripts/auto_start.py',
-                    'scripts/contract_init.py','scripts/evaluation_gate.py','scripts/blind_review.py','scripts/agent_adapters.py'}
+                    'scripts/contract_init.py','scripts/evaluation_gate.py','scripts/blind_review.py',
+                    'scripts/agent_adapters.py','scripts/strategy_review.py'}
         found = {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc'}
         self.assertEqual(expected, found)
 

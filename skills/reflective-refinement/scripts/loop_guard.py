@@ -173,9 +173,11 @@ def load(state_dir):
     data = json.loads(path.read_text(encoding='utf-8'))
     if data.get('version') != 1 or not isinstance(data.get('records'), list):
         raise GuardError('unsupported or corrupt contract')
-    if not (isinstance(data.get('target'), int) and data['target'] >= 1):
+    mode = data.get('mode', 'fixed')
+    if mode not in ('fixed', 'goal') or not isinstance(data.get('target'), int) or (
+            data['target'] < 1 if mode == 'fixed' else data['target'] != 0):
         raise GuardError('invalid target')
-    if len(data['records']) > data['target']:
+    if mode == 'fixed' and len(data['records']) > data['target']:
         raise GuardError('more records than target; inspect state')
     return data
 
@@ -194,15 +196,16 @@ def do_init(args):
     root = Path(args.workspace).expanduser().resolve(strict=True)
     if not root.is_dir():
         raise GuardError('workspace is not a directory')
-    if args.iterations < 1:
-        raise GuardError('target iterations must be positive')
+    if (args.goal_mode and args.iterations != 0) or (not args.goal_mode and args.iterations < 1):
+        raise GuardError('goal mode requires zero iterations; fixed mode requires a positive number')
     artifact = scoped_path(root, args.artifact)
     initial = artifact_hash(artifact)
     state_dir = Path(args.state_dir).expanduser().resolve()
     state_file = state_dir / 'contract.json'
     if state_file.exists():
         current = load(state_dir)
-        if (current['target'] != args.iterations or ' '.join(current['goal'].split()) != ' '.join(args.goal.split()) or
+        if (current['target'] != args.iterations or current.get('mode', 'fixed') != ('goal' if args.goal_mode else 'fixed') or
+                ' '.join(current['goal'].split()) != ' '.join(args.goal.split()) or
                 current['artifact'] != str(artifact) or current['workspace'] != str(root) or
                 current['evidence_kind'] != args.evidence_kind):
             raise GuardError('existing contract differs; do not silently reset it')
@@ -211,6 +214,7 @@ def do_init(args):
     if not args.goal.strip():
         raise GuardError('goal must not be empty')
     state = {'version': 1, 'goal': args.goal.strip(), 'target': args.iterations,
+             'mode': 'goal' if args.goal_mode else 'fixed', 'goal_met': False,
              'workspace': str(root), 'artifact': str(artifact), 'evidence_kind': args.evidence_kind,
              'initial_sha256': initial, 'created_ns': time.time_ns(), 'pending': None,
              'promotion_mode': 'external' if args.external_promotion else 'legacy', 'records': []}
@@ -225,7 +229,7 @@ def do_begin(args):
             raise GuardError('only one experiment receipt is permitted per worker invocation')
     if state['pending']:
         raise GuardError('previous experiment pending; finish or explicitly abandon')
-    if len(state['records']) >= state['target']:
+    if state.get('goal_met') or (state.get('mode', 'fixed') == 'fixed' and len(state['records']) >= state['target']):
         raise GuardError('contract already complete')
     root = Path(state['workspace'])
     source = scoped_path(root, str(Path(state['artifact']).relative_to(root)))
@@ -309,6 +313,32 @@ def resolve_promotion(state_dir, number, verdict, report_path):
         return record['outcome']
 
 
+def mark_goal_met(state_dir, number):
+    """Only a committed, externally verified gain may close an open-ended campaign."""
+    state_dir = Path(state_dir)
+    with ledger_lock(state_dir):
+        state = load(state_dir)
+        if state.get('mode') != 'goal' or state.get('goal_met'):
+            raise GuardError('not an active goal-driven campaign')
+        if number != len(state['records']):
+            raise GuardError('only the latest externally accepted experiment can finish a goal')
+        record = state['records'][-1]
+        if record.get('outcome') != 'keep' or record.get('evaluation_result') != 'KEEP':
+            raise GuardError('goal completion requires externally accepted source')
+        path = (state_dir / record['evaluation_file']).resolve()
+        if not path.is_relative_to(state_dir.resolve()) or sha(path.read_bytes()) != record['evaluation_sha256']:
+            raise GuardError('goal completion evidence was changed')
+        result = json.loads(path.read_text())
+        if result.get('decision') != 'KEEP' or result.get('target_completion') != 'MET':
+            raise GuardError('goal target was not externally verified')
+        source = scoped_path(Path(state['workspace']), str(Path(state['artifact']).relative_to(state['workspace'])))
+        if artifact_hash(source) != record['candidate_sha256']:
+            raise GuardError('accepted source does not match goal verification')
+        state['goal_met'] = True
+        state['goal_verified_trial'] = number
+        save(state_dir, state)
+
+
 def do_abandon(args):
     state = load(Path(args.state_dir))
     if not state['pending']:
@@ -325,8 +355,12 @@ def do_abandon(args):
 
 def status_dict(state):
     completed = len(state['records'])
-    return {'status': 'COMPLETE' if completed == state['target'] and all(r['outcome'] != 'pending' for r in state['records']) else 'INCOMPLETE',
-            'completed': completed, 'required': state['target'], 'remaining': state['target'] - completed,
+    goal_mode = state.get('mode') == 'goal'
+    complete = (state.get('goal_met') is True if goal_mode else completed == state['target'])
+    return {'status': 'COMPLETE' if complete and all(r['outcome'] != 'pending' for r in state['records']) else 'INCOMPLETE',
+            'mode': 'goal' if goal_mode else 'fixed', 'goal_met': state.get('goal_met', False),
+            'completed': completed, 'required': None if goal_mode else state['target'],
+            'remaining': None if goal_mode else state['target'] - completed,
             'pending': state['pending']['number'] if state['pending'] else None,
             'goal': state['goal'], 'kept': sum(r['outcome'] == 'keep' for r in state['records']),
             'unverified': sum(r['outcome'] in ('pending', 'hold') for r in state['records'])}
@@ -350,7 +384,8 @@ def build_parser():
     init.add_argument('--workspace', required=True)
     init.add_argument('--artifact', required=True, help='source file or source directory (exclude test outputs)')
     init.add_argument('--goal', required=True)
-    init.add_argument('--iterations', type=int, required=True)
+    init.add_argument('--iterations', type=int, default=0)
+    init.add_argument('--goal-mode', action='store_true', help='continue until externally verified target; no fixed N')
     init.add_argument('--evidence-kind', choices=('generic', 'visual'), default='generic')
     init.add_argument('--external-promotion', action='store_true', help='supervisor decides keep after external validation')
     start = sub.add_parser('begin')

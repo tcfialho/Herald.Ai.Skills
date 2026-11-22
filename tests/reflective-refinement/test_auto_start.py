@@ -106,7 +106,7 @@ class AutomaticStartTests(unittest.TestCase):
         args.remove('3')
         result = self.call(*args)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('required', result.stderr)
+        self.assertIn('fixed mode needs positive iterations', result.stderr)
 
     def test_unclean_repository_is_not_modified(self):
         (self.workspace / 'src' / 'artifact.txt').write_text('uncommitted user change')

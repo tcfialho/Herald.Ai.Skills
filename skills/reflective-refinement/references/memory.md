@@ -79,3 +79,7 @@ At each decision/hand-off, record a **continuation check**: target met (with evi
 Rebuild `state.md` from the authoritative records after each material decision or before a handoff. Include baseline and current accepted versions with verification scope, evaluation revision, remaining wall time and attempt/evaluation limits, current blocking question, relevant condition changes, and best feasible next test. If the journal grew large, summarize factual lessons and indexes separately, but retain original records. Carry forward contradictions and failed assumptions, not just successes. A new context should recover from these files without depending on the outgoing agent's conversation.
 
 Use Git commits (or equivalent snapshots) for artifact changes; isolate parallel candidates and preserve exact ancestry. Revert only experiment-owned paths; when ownership is uncertain pause with evidence intact. Commit experiment notes separately when appropriate; never overwrite or clean unrelated user work for the sake of restoring a candidate.
+
+## Fixed-count campaigns
+
+For an explicit N, copy the external guard count into `state.md` after every recorded experiment, preserve evidence pointers and the reason for a rejected trial. Never hand off a partial count as a completed campaign; resume from its ledger rather than resetting the budget or counting a prior experiment again.

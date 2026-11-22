@@ -12,10 +12,11 @@ class SkillIntegrityTests(unittest.TestCase):
         self.assertTrue(skill.startswith('---\n'))
         header = skill.split('---\n', 2)[1]
         self.assertRegex(header, r'(?m)^name: reflective-refinement$')
-        self.assertRegex(header, r"(?m)^\s+version: '0\.5\.1'$" )
+        self.assertRegex(header, r"(?m)^\s+version: '0\.5\.6'$" )
         self.assertRegex(header, r'(?m)^description: .+')
         self.assertLess(len(skill.splitlines()), 500)
         self.assertLess(len(skill), 20000)
+        self.assertIn('a numerical iteration request is a **binding deliverable**', skill.lower())
 
     def test_every_local_markdown_link_resolves(self):
         for path in ROOT.rglob('*.md'):
@@ -29,8 +30,12 @@ class SkillIntegrityTests(unittest.TestCase):
         expected = {'SKILL.md','references/diagnosis.md','references/discovery.md',
                     'references/evaluation.md','references/examples.md','references/exploration.md',
                     'references/memory.md','references/methods.md','references/outcomes.md',
-                    'references/qualitative.md','references/quantitative.md'}
-        found = {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()}
+                    'references/qualitative.md','references/quantitative.md',
+                    'references/iteration-contract.md','references/auto-enforcement.md','references/evaluation-harness.md',
+                    'references/judge.schema.json','references/evaluation-contract.example.json',
+                    'scripts/loop_guard.py','scripts/codex_supervisor.py','scripts/auto_start.py',
+                    'scripts/contract_init.py','scripts/evaluation_gate.py','scripts/blind_review.py','scripts/agent_adapters.py'}
+        found = {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc'}
         self.assertEqual(expected, found)
 
     def test_untouched_specialized_protocols_match_original(self):
@@ -48,7 +53,7 @@ class SkillIntegrityTests(unittest.TestCase):
                     'when the user delegates design judgment',
                     'stop only with an evidenced reason',
                     'at least two materially different mechanisms',
-                    'simple fully resolved fixes can still stop after one valid experiment']
+                    'only when n was **not** explicitly requested']
         for phrase in required:
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)

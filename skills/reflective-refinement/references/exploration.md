@@ -4,7 +4,7 @@ Read when the next experiment is uncertain, the search stalls, or a better paren
 
 ## Route by evidence, not iteration number
 
-Check limits first. Stop when the target is confirmed, budget is exhausted or a blocker cannot be resolved within it. Reserve resources for representative promotion and final confirmation before another candidate. For an active session, use the first applicable action:
+Check limits first. Without an explicit fixed-count contract, stop when the target is confirmed, budget is exhausted or a blocker cannot be resolved within it. If the user specified N trials, preserve the count contract and report INCOMPLETE until N valid trials or an actual blocker/budget/user stop. Reserve resources for representative promotion and final confirmation before another candidate. For an active session, use the first applicable action:
 
 | Current state | Next action |
 |---|---|
@@ -16,7 +16,7 @@ Check limits first. Stop when the target is confirmed, budget is exhausted or a 
 | A current bottleneck has a credible, testable, cheap remedy | Refine locally |
 | No useful direction after a valid distinct exploration | Report a defensible plateau and best verified version |
 
-Use the thresholds as heuristics, not a claim of optimality. Repeated invalid or blocked runs need recovery or a blocker report, not a plateau verdict. An empty ideas list is not proof that quality has converged. When progress is possible and within budget, seek a new discriminating observation; do not continue merely to exhaust a count.
+Use the thresholds as heuristics, not a claim of optimality. Repeated invalid or blocked runs need recovery or a blocker report, not a plateau verdict. An empty ideas list is not proof that quality has converged. When progress is possible and within budget, seek a new discriminating observation; do not manufacture repetitive or meaningless trials merely to satisfy a count; an explicit N remains binding and unmet attempts must be reported as INCOMPLETE.
 
 ## Select a high-value experiment
 

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "user_goal": "Improve the trackside appearance of generated courses while playing",
+  "kind": "visual",
+  "primary_outcome": "Trackside areas have credible depth, variety and visual quality similar to native tracks",
+  "case_ids": [
+    "straight",
+    "curve"
+  ],
+  "hard_checks": [
+    {
+      "id": "course-loads-and-physics",
+      "argv": [
+        "python",
+        "tests/check_generated_courses.py"
+      ],
+      "timeout_seconds": 120
+    }
+  ],
+  "benchmark": null,
+  "primary_metrics": [],
+  "protected_paths": [
+    "tests/check_generated_courses.py"
+  ],
+  "reference_evidence": {
+    "straight": ".refinement/baseline/straight.png",
+    "curve": ".refinement/baseline/curve.png"
+  },
+  "review": {
+    "required": true,
+    "criteria": [
+      "scene-depth",
+      "variety",
+      "material-coherence",
+      "track-legibility"
+    ],
+    "calibrate": true,
+    "reverse_order": true,
+    "known_bad_evidence": {
+      "straight": ".refinement/controls/flat-straight.png",
+      "curve": ".refinement/controls/flat-curve.png"
+    },
+    "criterion_guidance": {
+      "scene-depth": "Roadside ground and terrain must show depth and natural transitions from the actual in-game camera",
+      "variety": "Repeated segments should not look identical across multiple course views",
+      "material-coherence": "Surfaces and props must match their setting without visibly conflicting with terrain",
+      "track-legibility": "Road boundaries and kerbs must remain readable while driving"
+    },
+    "required_nonregression": [
+      "track-legibility"
+    ],
+    "quality_gate": {
+      "max_remaining_severity": "minor",
+      "coverage_groups": {
+        "gameplay": [
+          "straight",
+          "curve"
+        ]
+      },
+      "severity_anchors": {
+        "minor": "Only noticeable when inspecting side by side",
+        "major": "Obvious flat or repetitive roadside area during normal gameplay"
+      }
+    },
+    "target_reference_evidence": {
+      "straight": ".refinement/references/native-straight.png",
+      "curve": ".refinement/references/native-curve.png"
+    }
+  },
+  "priority_order": [
+    "Visual quality during actual gameplay",
+    "Preserve driving behavior and track legibility",
+    "Stable frame pacing"
+  ]
+}
